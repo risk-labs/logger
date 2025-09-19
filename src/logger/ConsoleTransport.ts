@@ -17,12 +17,7 @@ export function createConsoleTransport(): winston.transports.ConsoleTransportIns
 
         let log = `${timestamp} [${level}]: ${
           Object.keys(args).length
-            ? JSON.stringify(
-                args,
-                (key, value) =>
-                  typeof value === "bigint" ? value.toString() : value,
-                2
-              )
+            ? JSON.stringify(args, (key, value) => (typeof value === "bigint" ? value.toString() : value), 2)
             : ""
         }`;
 

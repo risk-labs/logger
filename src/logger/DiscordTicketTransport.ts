@@ -122,7 +122,11 @@ export class DiscordTicketTransport extends PersistentTransport {
     const message = header + content;
 
     // Send out the message.
-    await channel.send(message);
+    if (channel.isSendable()) {
+      await channel.send(message);
+    } else {
+      throw new Error(`Channel with id ${channelId} is not sendable.`);
+    }
   }
 
   // Use bot token for establishing a connection to Discord API.
