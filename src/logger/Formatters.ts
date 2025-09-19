@@ -1,5 +1,5 @@
+import { BigNumber } from "@ethersproject/bignumber";
 import type { LogEntry } from "winston";
-import { BigNumber } from "ethers";
 import web3 from "web3";
 
 // If the log entry contains an error then extract the stack trace as the error message.
@@ -22,7 +22,12 @@ export function bigNumberFormatter(logEntry: LogEntry) {
     // Because winston depends on some non-enumerable symbol properties, we explicitly copy those over, as they are not
     // handled in iterativelyReplaceBigNumbers. This only needs to happen if logEntry is being replaced.
     if (out !== logEntry)
-      Object.getOwnPropertySymbols(logEntry).map((symbol) => (out[symbol] = (logEntry as SymbolRecord)[symbol]));
+      Object.getOwnPropertySymbols(logEntry).map(
+        (symbol) =>
+          ((out as Record<string | symbol, any>)[symbol] = (
+            logEntry as SymbolRecord
+          )[symbol])
+      );
     return out as LogEntry;
   } catch (_) {
     return logEntry;
@@ -31,15 +36,26 @@ export function bigNumberFormatter(logEntry: LogEntry) {
 
 // Handle case where `error` is an array of errors and we want to display all of the error stacks recursively.
 // i.e. `error` is in the shape: [[Error, Error], [Error], [Error, Error]]
-export function handleRecursiveErrorArray(error: Error | any[]): string | any[] {
+export function handleRecursiveErrorArray(
+  error: Error | any[]
+): string | any[] {
   // If error is not an array, then just return error information for there is no need to recurse further.
-  if (!Array.isArray(error)) return error.stack || error.message || error.toString() || "could not extract error info";
+  if (!Array.isArray(error))
+    return (
+      error.stack ||
+      error.message ||
+      error.toString() ||
+      "could not extract error info"
+    );
   // Recursively add all errors to an array and flatten the output.
   return error.map(handleRecursiveErrorArray).flat();
 }
 
 // This formatter checks if the `BOT_IDENTIFIER` env variable is present. If it is, the name is appended to the message.
-export function botIdentifyFormatter(botIdentifier: string, runIdentifier: string) {
+export function botIdentifyFormatter(
+  botIdentifier: string,
+  runIdentifier: string
+) {
   return function (logEntry: LogEntry) {
     logEntry["bot-identifier"] = botIdentifier;
     logEntry["run-identifier"] = runIdentifier;
@@ -52,11 +68,15 @@ export function botIdentifyFormatter(botIdentifier: string, runIdentifier: strin
 const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
-  const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    if (BigNumber.isBigNumber(value) || web3.utils.isBN(value)) return [key, value.toString()];
-    else if (typeof value === "object" && value !== null) return [key, iterativelyReplaceBigNumbers(value)];
-    else return [key, value];
-  });
+  const replacements = Object.entries(obj).map(
+    ([key, value]): [string, any] => {
+      if (BigNumber.isBigNumber(value) || web3.utils.isBN(value))
+        return [key, value.toString()];
+      else if (typeof value === "object" && value !== null)
+        return [key, iterativelyReplaceBigNumbers(value)];
+      else return [key, value];
+    }
+  );
 
   // This will catch any values that were changed by value _or_ by reference.
   // If no changes were detected, no copy is needed and it is fine to discard the copy and return the original object.
