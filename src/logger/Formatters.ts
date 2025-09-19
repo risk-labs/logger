@@ -1,33 +1,33 @@
 import { BigNumber } from "@ethersproject/bignumber";
-import type { LogEntry } from "winston";
+import type { TransformableInfo } from "logform";
 import web3 from "web3";
 
 // If the log entry contains an error then extract the stack trace as the error message.
-export function errorStackTracerFormatter(logEntry: LogEntry) {
-  if (logEntry.error) {
-    logEntry.error = handleRecursiveErrorArray(logEntry.error);
+export function errorStackTracerFormatter(info: TransformableInfo) {
+  if ((info as any).error) {
+    (info as any).error = handleRecursiveErrorArray((info as any).error);
   }
-  return logEntry;
+  return info;
 }
 
 // Iterate over each element in the log and see if it is a big number. if it is, then try casting it to a string to
 // make it more readable. If something goes wrong in parsing the object (it's too large or something else) then simply
 // return the original log entry without modifying it.
-export function bigNumberFormatter(logEntry: LogEntry) {
+export function bigNumberFormatter(info: TransformableInfo) {
   type SymbolRecord = Record<string | symbol, any>;
   try {
     // Out is the original object if and only if one or more BigNumbers were replaced.
-    const out = iterativelyReplaceBigNumbers(logEntry);
+    const out = iterativelyReplaceBigNumbers(info as unknown as Record<string | symbol, any>);
 
     // Because winston depends on some non-enumerable symbol properties, we explicitly copy those over, as they are not
     // handled in iterativelyReplaceBigNumbers. This only needs to happen if logEntry is being replaced.
-    if (out !== logEntry)
-      Object.getOwnPropertySymbols(logEntry).map(
-        (symbol) => ((out as Record<string | symbol, any>)[symbol] = (logEntry as SymbolRecord)[symbol])
+    if (out !== (info as any))
+      Object.getOwnPropertySymbols(info).map(
+        (symbol) => ((out as Record<string | symbol, any>)[symbol] = (info as unknown as SymbolRecord)[symbol])
       );
-    return out as LogEntry;
+    return out as unknown as TransformableInfo;
   } catch (_) {
-    return logEntry;
+    return info;
   }
 }
 
@@ -42,10 +42,10 @@ export function handleRecursiveErrorArray(error: Error | any[]): string | any[] 
 
 // This formatter checks if the `BOT_IDENTIFIER` env variable is present. If it is, the name is appended to the message.
 export function botIdentifyFormatter(botIdentifier: string, runIdentifier: string) {
-  return function (logEntry: LogEntry) {
-    logEntry["bot-identifier"] = botIdentifier;
-    logEntry["run-identifier"] = runIdentifier;
-    return logEntry;
+  return function (info: TransformableInfo) {
+    (info as any)["bot-identifier"] = botIdentifier;
+    (info as any)["run-identifier"] = runIdentifier;
+    return info;
   };
 }
 
