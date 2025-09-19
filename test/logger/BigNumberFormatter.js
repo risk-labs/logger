@@ -1,6 +1,6 @@
 const { assert } = require("chai");
 const { bigNumberFormatter } = require("../../dist/logger/Formatters.js");
-const { BigNumber } = require("ethers");
+const { BigNumber } = require("@ethersproject/bignumber");
 const Web3 = require("web3");
 const { toBN } = Web3.utils;
 const { cloneDeep } = require("lodash");
