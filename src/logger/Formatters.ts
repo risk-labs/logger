@@ -1,6 +1,4 @@
-import { BigNumber } from "@ethersproject/bignumber";
 import type { TransformableInfo } from "logform";
-import web3 from "web3";
 
 // If the log entry contains an error then extract the stack trace as the error message.
 export function errorStackTracerFormatter(info: TransformableInfo) {
@@ -55,7 +53,7 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    if (BigNumber.isBigNumber(value) || web3.utils.isBN(value)) return [key, value.toString()];
+    if (stringifiableBigNumberLike(value)) return [key, value.toString()];
     else if (typeof value === "object" && value !== null) return [key, iterativelyReplaceBigNumbers(value)];
     else return [key, value];
   });
@@ -67,6 +65,38 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // Only copy if something changed. Otherwise, return the original object.
   return copyNeeded ? Object.fromEntries(replacements) : obj;
 };
+
+// This function is a best effort dependency-free reimplementation of the following evaluation:
+// (BigNumber.isBigNumber(value) || web3.utils.isBN(value))
+// `BigNumber` in the line above is from ethers before v6
+function stringifiableBigNumberLike(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as Record<string, any>;
+
+  // Must be stringifiable first
+  if (typeof candidate.toString !== "function") return false;
+
+  // - Ethers BigNumber v5 instances have `_isBigNumber === true`.
+  if (candidate._isBigNumber === true) return true;
+
+  // - bn.js: mimic BN.isBN without importing BN.
+  if (isBnJsLike(candidate)) return true;
+
+  return false;
+}
+
+// Mimit isBN function from bn.js that web3.js is using under the hood
+// https://github.com/indutny/bn.js/blob/6db7c3818569423b94ebcf2bdff90fcfb9c47f6d/lib/bn.js#L61
+function isBnJsLike(candidate: Record<string, any>): boolean {
+  const ctor = candidate && candidate.constructor;
+  const ctorWordSize = ctor && (ctor as any).wordSize;
+  const hasWordsArray = candidate.words && Array.isArray(candidate.words);
+  // bn.js sets BN.wordSize = 26
+  const BNWordSize = 26;
+  if (typeof ctorWordSize === "number" && ctorWordSize === BNWordSize && hasWordsArray) return true;
+  return false;
+}
 
 // Some transports do not support markdown formatted links (e.g. <https://google.com|google.com>). This method removes
 // the text anchor and leave plain URLs in the message.
