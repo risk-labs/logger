@@ -117,7 +117,7 @@ export class DiscordTicketTransport extends PersistentTransport {
     const header = `$ticket ${info.message}\n`;
     const content = this.truncateMessage(
       removeAnchorTextFromLinks(info.mrkdwn),
-      DISCORD_MAX_CHAR_LIMIT - header.length
+      DISCORD_MAX_CHAR_LIMIT - header.length,
     );
     const message = header + content;
 
@@ -166,7 +166,7 @@ export class DiscordTicketTransport extends PersistentTransport {
       if (messageChunks[i].length > TRUNCATED.length) {
         const retainedChunkLength = Math.max(
           0,
-          isUrlRound ? 0 : messageChunks[i].length - TRUNCATED.length - (truncatedMessageLength - limit)
+          isUrlRound ? 0 : messageChunks[i].length - TRUNCATED.length - (truncatedMessageLength - limit),
         );
         truncatedMessageLength -= messageChunks[i].length - retainedChunkLength - TRUNCATED.length;
         messageChunks[i] = messageChunks[i].slice(0, retainedChunkLength) + TRUNCATED;

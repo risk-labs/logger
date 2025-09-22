@@ -71,7 +71,7 @@ export abstract class PersistentTransport extends Transport {
   constructor(
     winstonOpts: TransportOptions,
     protected readonly derivedTransport: string,
-    protected readonly sharedLogQueue?: string
+    protected readonly sharedLogQueue?: string,
   ) {
     super(winstonOpts);
 

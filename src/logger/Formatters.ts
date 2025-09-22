@@ -21,7 +21,7 @@ export function bigNumberFormatter(info: TransformableInfo) {
     // handled in iterativelyReplaceBigNumbers. This only needs to happen if logEntry is being replaced.
     if (out !== (info as any))
       Object.getOwnPropertySymbols(info).map(
-        (symbol) => ((out as Record<string | symbol, any>)[symbol] = (info as unknown as SymbolRecord)[symbol])
+        (symbol) => ((out as Record<string | symbol, any>)[symbol] = (info as unknown as SymbolRecord)[symbol]),
       );
     return out as unknown as TransformableInfo;
   } catch (_) {

@@ -31,7 +31,7 @@ export class PagerDutyTransport extends Transport {
       defaultServiceId: string;
       customServices?: { [key: string]: string };
       logTransportErrors?: boolean;
-    }
+    },
   ) {
     super(winstonOpts);
 

@@ -34,7 +34,7 @@ export class PagerDutyV2Transport extends Transport {
   public readonly logTransportErrors: boolean;
   constructor(
     winstonOpts: TransportOptions,
-    { integrationKey, customServices = {}, logTransportErrors = false }: Config
+    { integrationKey, customServices = {}, logTransportErrors = false }: Config,
   ) {
     super(winstonOpts);
     this.integrationKey = integrationKey;

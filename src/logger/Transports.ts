@@ -75,8 +75,8 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
       transports.push(
         new DiscordTransport(
           { level: "info" },
-          transportsConfig.discordConfig ?? JSON.parse(process.env.DISCORD_CONFIG || "null")
-        )
+          transportsConfig.discordConfig ?? JSON.parse(process.env.DISCORD_CONFIG || "null"),
+        ),
       );
     }
 
@@ -92,8 +92,8 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
       transports.push(
         new PagerDutyTransport(
           { level: "error" },
-          transportsConfig.pagerDutyConfig ?? JSON.parse(process.env.PAGER_DUTY_CONFIG || "null")
-        )
+          transportsConfig.pagerDutyConfig ?? JSON.parse(process.env.PAGER_DUTY_CONFIG || "null"),
+        ),
       );
     }
 

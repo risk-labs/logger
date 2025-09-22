@@ -55,7 +55,7 @@ export class DiscordTransport extends Transport {
       defaultWebHookUrl: string;
       escalationPathWebhookUrls: { [key: string]: string };
       postOnNonEscalationPaths: boolean;
-    }
+    },
   ) {
     super(winstonOpts);
     this.defaultWebHookUrl = ops.defaultWebHookUrl;

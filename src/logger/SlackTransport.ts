@@ -136,7 +136,7 @@ function slackFormatter(info: any): SlackFormatterResponse {
           text: {
             type: "mrkdwn",
             text: `*Something went wrong in the winston formatter!*\n\nError:${error}\n\nlogInfo:${JSON.stringify(
-              info
+              info,
             )}`,
           },
         },

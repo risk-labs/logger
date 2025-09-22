@@ -28,7 +28,7 @@ export function createConsoleTransport(): winston.transports.ConsoleTransportIns
           log = `${log}\n${error}`;
         }
         return log;
-      })
+      }),
     ),
   });
 }

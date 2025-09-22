@@ -20,7 +20,7 @@ export function createJsonTransport(): winston.transports.ConsoleTransportInstan
             .replace(/\\"/g, ""); // Remove escaped quotes.
         }
         return JSON.stringify(info);
-      })
+      }),
     ),
   });
 }

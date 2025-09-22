@@ -80,7 +80,7 @@ function createBaseLogger(
   level: string,
   transports: Transport[],
   botIdentifier: string,
-  runIdentifier: string
+  runIdentifier: string,
 ): _Logger {
   return winston.createLogger({
     level,
@@ -89,7 +89,7 @@ function createBaseLogger(
       winston.format((logEntry) => logEntry)(),
       winston.format(errorStackTracerFormatter)(),
       winston.format(bigNumberFormatter)(),
-      winston.format.json()
+      winston.format.json(),
     ),
     transports,
     exitOnError: !!process.env.EXIT_ON_ERROR,
@@ -102,7 +102,7 @@ function filterLogErrorTransports(transports: Transport[]): Transport[] {
   return transports.filter(
     (transport) =>
       (transport instanceof PagerDutyTransport || transport instanceof PagerDutyV2Transport) &&
-      transport.logTransportErrors
+      transport.logTransportErrors,
   );
 }
 
@@ -110,7 +110,7 @@ function filterLogErrorTransports(transports: Transport[]): Transport[] {
 // This is intended to be used only when waiting for logger before termination.
 async function pausePersistentLogQueueProcessing(transports: Transport[]): Promise<void> {
   const persistentTransports = transports.filter(
-    (transport) => transport instanceof PersistentTransport
+    (transport) => transport instanceof PersistentTransport,
   ) as PersistentTransport[];
 
   // Signal pause queue processing, but wait for any currently processed elements still being logged.
@@ -135,7 +135,7 @@ export function createNewLogger(
   injectedTransports: Transport[] = [],
   transportsConfig = {},
   botIdentifier = process.env.BOT_IDENTIFIER || noBotId,
-  runIdentifier = process.env.RUN_IDENTIFIER || generateRandomRunId()
+  runIdentifier = process.env.RUN_IDENTIFIER || generateRandomRunId(),
 ): AugmentedLogger {
   const transports = [...createTransports(transportsConfig), ...injectedTransports];
   const logger = createBaseLogger("debug", transports, botIdentifier, runIdentifier) as AugmentedLogger;
@@ -147,7 +147,7 @@ export function createNewLogger(
     "error",
     filterLogErrorTransports(logger.transports),
     botIdentifier,
-    runIdentifier
+    runIdentifier,
   );
   logger.on("error", (error) => {
     if (error instanceof TransportError) {
