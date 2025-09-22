@@ -12,9 +12,8 @@
     "minimist": "^1.2.0",
     "node-pagerduty": "^1.2.0",
     "redis": "^4.6.13",
-    "superstruct": "^1.0.3",
-    "winston": "3.8.2",
-    "winston-transport": "4.5.0"
+    "superstruct": "^2.0.2",
+    "winston": "^3.17.0"
   },
   "devDependencies": {
     "@ethersproject/bignumber": "^5.0.5",
