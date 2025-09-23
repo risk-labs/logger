@@ -13,7 +13,8 @@
     "node-pagerduty": "^1.2.0",
     "redis": "^4.6.13",
     "superstruct": "^2.0.2",
-    "winston": "^3.17.0"
+    "winston": "^3.17.0",
+    "winston-transport": "^4.9.0"
   },
   "devDependencies": {
     "@ethersproject/bignumber": "^5.0.5",
