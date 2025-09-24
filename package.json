@@ -29,12 +29,12 @@
     "typescript": "^5.9.2",
     "web3": "^1.6.0"
   },
-  "homepage": "https://umaproject.org",
+  "homepage": "https://risklabs.foundation",
   "license": "AGPL-3.0-or-later",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
-    "registry": "https://registry.npmjs.com/",
+    "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
   "repository": {
