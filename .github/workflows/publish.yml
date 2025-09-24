@@ -27,6 +27,12 @@ jobs:
       - name: Update npm
         run: npm install -g npm@latest
 
+      - name: Log Node & npm versions (after update)
+        # Make sure we hit 11.5.1 version requirement for Trusted Publishing
+        run: |
+          node -v
+          npm -v
+
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
@@ -51,4 +57,4 @@ jobs:
           fi
 
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --verbose
