@@ -68,7 +68,6 @@ export class DiscordTicketTransport extends PersistentTransport {
 
     this.botToken = botToken;
     this.channelIds = channelIds;
-
     this.rest = new REST({ version: "10" }).setToken(this.botToken);
     this.rateLimit = rateLimit;
   }
