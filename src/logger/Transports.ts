@@ -47,7 +47,7 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
   // improved log record loss: https://cloud.google.com/nodejs/docs/reference/logging-winston/latest#alternative-way-to-ingest-logs-in-google-cloud-managed-environments
   if ((transportsConfig.environment ?? process.env.ENVIRONMENT) == "serverless") {
     const { LoggingWinston } = require("@google-cloud/logging-winston");
-    transports.push(new LoggingWinston({ redirectToStdout: true, useMessageField: false, }));
+    transports.push(new LoggingWinston({ redirectToStdout: true, useMessageField: false }));
     if (!require("@google-cloud/trace-agent").get().enabled) require("@google-cloud/trace-agent").start();
   }
 
