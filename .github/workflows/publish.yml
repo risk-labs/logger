@@ -43,6 +43,7 @@ jobs:
         run: yarn test
 
       - name: Verify tag matches package.json version
+        id: verify
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -55,6 +56,12 @@ jobs:
             echo "Tag ($TAG) does not match package.json version ($PKG_VERSION)"
             exit 1
           fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Publish to npm
+      - name: Publish version
+        if: ${{ !contains(steps.verify.outputs.tag, '-alpha') }}
         run: npm publish --verbose
+
+      - name: Publish tagged version
+        if: ${{ contains(steps.verify.outputs.tag, '-alpha') && contains(steps.verify.outputs.tag, 'alpha.') }}
+        run: npm publish --tag alpha --verbose
