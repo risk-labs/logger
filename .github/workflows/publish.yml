@@ -20,6 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Update npm
+        run: npm install -g npm@latest
+
       # Note we set an `id` called `release`. We'll use that later...
       - name: Validate and extract release information
         id: release
@@ -55,12 +58,12 @@ jobs:
       # This will publish a version of a package.
       - name: Publish version
         if: steps.release.outputs.tag == ''
-        run: yarn publish
+        run: npm publish
         env:
           NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish tagged version
         if: steps.release.outputs.tag != ''
-        run: yarn publish --tag ${{ steps.release.outputs.tag }}
+        run: npm publish --tag ${{ steps.release.outputs.tag }}
         env:
           NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
