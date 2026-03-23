@@ -4,6 +4,7 @@
 
 // Transport objects
 import { createConsoleTransport } from "./ConsoleTransport";
+import { createJsonTransport } from "./JsonTransport";
 import { createSlackTransport } from "./SlackTransport";
 import { PagerDutyTransport } from "./PagerDutyTransport";
 import {
@@ -43,12 +44,12 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
   // Transports array to store all winston transports.
   const transports: Transport[] = [];
 
-  // If the logger is running in serverless mode then add the GCP winston transport with `redirectToStdout: true` for
-  // improved log record loss: https://cloud.google.com/nodejs/docs/reference/logging-winston/latest#alternative-way-to-ingest-logs-in-google-cloud-managed-environments
+  // If the logger is running in serverless mode then add the GCP winston transport and console transport.
   if ((transportsConfig.environment ?? process.env.ENVIRONMENT) == "serverless") {
     const { LoggingWinston } = require("@google-cloud/logging-winston");
-    transports.push(new LoggingWinston({ redirectToStdout: true, useMessageField: false }));
+    transports.push(new LoggingWinston());
     if (!require("@google-cloud/trace-agent").get().enabled) require("@google-cloud/trace-agent").start();
+    transports.push(createJsonTransport());
   }
 
   // If the logger is running in production mode then add the GCE winston transport. Else, add a console transport.
