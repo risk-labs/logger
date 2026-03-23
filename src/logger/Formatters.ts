@@ -55,10 +55,14 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
     if (stringifiableBigNumberLike(value)) {
       return [key, value.toString()];
-    } else if (typeof value === "object" && value !== null && typeof value.toJSON === "function") {
-      return [key, value.toJSON()];
-    } else if (typeof value === "object" && value !== null) {
-      return [key, iterativelyReplaceBigNumbers(value)];
+    } else if (typeof value === "object") {
+      if (typeof value?.toJSON === "function") {
+        return [key, value.toJSON()];
+      }
+
+      if (value !== null) {
+        return [key, iterativelyReplaceBigNumbers(value)];
+      }
     }
 
     return [key, value];
