@@ -53,9 +53,19 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    if (stringifiableBigNumberLike(value)) return [key, value.toString()];
-    else if (typeof value === "object" && value !== null) return [key, iterativelyReplaceBigNumbers(value)];
-    else return [key, value];
+    if (stringifiableBigNumberLike(value)) {
+      return [key, value.toString()];
+    } else if (typeof value === "object") {
+      if (typeof value?.toJSON === "function") {
+        return [key, value.toJSON()];
+      }
+
+      if (value !== null) {
+        return [key, iterativelyReplaceBigNumbers(value)];
+      }
+    }
+
+    return [key, value];
   });
 
   // This will catch any values that were changed by value _or_ by reference.
