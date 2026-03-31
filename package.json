@@ -4,8 +4,8 @@
   "description": "Logger library",
   "dependencies": {
     "@discordjs/rest": "^2.6.1",
-    "@google-cloud/logging-winston": "^4.1.1",
-    "@google-cloud/trace-agent": "^5.1.6",
+    "@google-cloud/logging-winston": "^6.0.1",
+    "@google-cloud/trace-agent": "^8.0.0",
     "@pagerduty/pdjs": "^2.2.4",
     "axios": "^1.12.2",
     "discord-api-types": "^0.38.43",
