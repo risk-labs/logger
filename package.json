@@ -9,7 +9,7 @@
     "@pagerduty/pdjs": "^2.2.4",
     "axios": "^1.12.2",
     "discord-api-types": "^0.38.43",
-    "dotenv": "^9.0.0",
+    "dotenv": "^17.3.1",
     "minimist": "^1.2.0",
     "node-pagerduty": "^1.2.0",
     "redis": "^4.6.13",
@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@ethersproject/bignumber": "^5.0.5",
-    "@tsconfig/node14": "^1.0.0",
+    "@tsconfig/node22": "^22.0.5",
     "@types/minimist": "^1.2.5",
     "@types/sinon": "^10.0.0",
     "chai": "^4.3.4",
