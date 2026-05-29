@@ -61,13 +61,14 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
 
   // If the logger is running in serverless-gcp mode, emit GCP-structured JSON log entries to stdout for ingestion by
   // the Cloud Logging Agent rather than calling the Cloud Logging API directly. This avoids the gax 60s API timeout
-  // failure mode while preserving severity mapping, trace correlation, and resource detection. Suitable for Cloud
-  // Run / Cloud Functions / GKE workloads where the runtime already tails container stdout.
+  // failure mode while preserving severity mapping and resource detection. Suitable for Cloud Run / Cloud Functions /
+  // GKE workloads where the runtime already tails container stdout. trace-agent is intentionally not started here:
+  // its purpose is to instrument outbound HTTP/gRPC into Cloud Trace, which (a) is unrelated to the stdout log path
+  // and (b) re-introduces the same gRPC failure class this mode exists to avoid.
   // https://github.com/googleapis/nodejs-logging-winston#alternative-way-to-ingest-logs-in-google-cloud-managed-environments
   else if ((transportsConfig.environment ?? process.env.ENVIRONMENT) == "serverless-gcp") {
     const { LoggingWinston } = require("@google-cloud/logging-winston");
     transports.push(new LoggingWinston({ redirectToStdout: true }));
-    if (!require("@google-cloud/trace-agent").get().enabled) require("@google-cloud/trace-agent").start();
   } else if (transportsConfig.createConsoleTransport != undefined ? transportsConfig.createConsoleTransport : true) {
     // Add a console transport to log to the console.
     transports.push(createConsoleTransport());
