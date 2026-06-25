@@ -25,8 +25,6 @@ import Transport from "winston-transport";
 import axios from "axios";
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
 
-import { TransportError } from "./TransportError";
-
 interface MarkdownText {
   type: "mrkdwn";
   text: string;
@@ -151,11 +149,20 @@ interface Options extends TransportOptions {
   transportConfig: {
     escalationPathWebhookUrls?: { [key: string]: string };
     defaultWebHookUrl: string;
+    // Minimum spacing between two POSTs to the same webhook — the "emit at a specific rate" lever.
+    // Optional; defaults to DEFAULT_MIN_SEND_INTERVAL_MS (~1 msg/sec, just under Slack's webhook limit).
+    minSendIntervalMs?: number;
   };
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
   proxy?: AxiosRequestConfig["proxy"];
 }
+
+// Slack incoming webhooks allow ~1 request/second/webhook, so the default spacing stays just under that.
+export const DEFAULT_MIN_SEND_INTERVAL_MS = 1100;
+const MAX_RETRIES = 5; // attempts for a single message before it is dropped
+const MAX_QUEUE_SIZE = 1000; // messages buffered per webhook before the oldest are dropped (bounds memory)
+const RETRY_FALLBACK_MS = 1000; // retry wait when Slack sent no Retry-After (5xx / network error)
 
 class SlackHook extends Transport {
   private name: string;
@@ -164,6 +171,10 @@ class SlackHook extends Transport {
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
   private readonly axiosInstance: AxiosInstance;
+  private readonly minSendIntervalMs: number;
+  // One FIFO queue and at most one in-flight drain per webhook URL (Slack's rate limit is per-webhook).
+  private readonly queues = new Map<string, { body: unknown; attempts: number }[]>();
+  private readonly draining = new Set<string>();
 
   constructor(opts: Options) {
     super(opts);
@@ -173,15 +184,12 @@ class SlackHook extends Transport {
     this.defaultWebHookUrl = opts.transportConfig.defaultWebHookUrl;
     this.formatter = opts.formatter;
     this.mrkdwn = opts.mrkdwn || false;
-    this.axiosInstance = axios.create({
-      proxy: opts.proxy,
-      validateStatus: (status) => {
-        return status == 200;
-      },
-    });
+    this.minSendIntervalMs = opts.transportConfig.minSendIntervalMs ?? DEFAULT_MIN_SEND_INTERVAL_MS;
+    // Accept every status so we can read 429s (and their Retry-After) instead of letting axios throw.
+    this.axiosInstance = axios.create({ proxy: opts.proxy, validateStatus: () => true });
   }
 
-  async log(info: any, callback: (error?: unknown) => void): Promise<void> {
+  log(info: any, callback: (error?: unknown) => void): void {
     try {
       // If the log contains a notification path then use a custom slack webhook service. This lets the transport route to
       // different slack channels depending on the context of the log.
@@ -190,21 +198,73 @@ class SlackHook extends Transport {
       const payload: { blocks?: Block[]; text?: string; mrkdwn?: boolean } = { mrkdwn: this.mrkdwn };
       const layout = this.formatter(info);
       payload.blocks = layout.blocks || undefined;
-      // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
-      if (JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) {
-        await this.axiosInstance.post(webhookUrl, payload);
-      } else {
-        // Iterate over each message to send and generate a axios call for each message.
-        for (const processedBlock of processMessageBlocks(payload.blocks)) {
-          payload.blocks = processedBlock;
-          await this.axiosInstance.post(webhookUrl, payload);
+      // Split a >3000-char payload into several slack messages; otherwise send it as one.
+      const bodies =
+        JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT
+          ? [payload]
+          : processMessageBlocks(payload.blocks ?? []).map((blocks) => ({ ...payload, blocks }));
+      for (const body of bodies) this.enqueue(webhookUrl, body);
+    } catch (error) {
+      // Don't surface errors back through winston — that makes it try to log the failure, which in
+      // serverless mode emits the noisy "Attempt to write logs with no transports" warning we're killing.
+      // eslint-disable-next-line no-console
+      console.warn("[SlackTransport] Failed to enqueue Slack message:", error);
+    }
+    callback(); // accepted into the queue; let winston proceed without waiting for delivery
+  }
+
+  private enqueue(webhookUrl: string, body: unknown): void {
+    const queue = this.queues.get(webhookUrl) ?? this.queues.set(webhookUrl, []).get(webhookUrl)!;
+    if (queue.length >= MAX_QUEUE_SIZE) queue.shift(); // bound memory: drop oldest under a sustained backlog
+    queue.push({ body, attempts: 0 });
+    void this.drain(webhookUrl);
+  }
+
+  // Drains a webhook's queue one message at a time, spaced by minSendIntervalMs, retrying 429s and 5xx.
+  private async drain(webhookUrl: string): Promise<void> {
+    if (this.draining.has(webhookUrl)) return;
+    this.draining.add(webhookUrl);
+    const queue = this.queues.get(webhookUrl) ?? [];
+    try {
+      while (queue.length > 0) {
+        const message = queue[0];
+        message.attempts += 1;
+        const retryMs = await this.deliver(webhookUrl, message.body);
+        if (retryMs !== null && message.attempts <= MAX_RETRIES) {
+          await sleep(retryMs); // wait Slack's Retry-After (or fallback), then retry the same message
+        } else {
+          queue.shift(); // delivered, permanently failed, or out of retries
+          if (queue.length > 0) await sleep(this.minSendIntervalMs);
         }
       }
-    } catch (error) {
-      return callback(new TransportError("Slack", error, info));
+    } finally {
+      this.draining.delete(webhookUrl);
     }
-    callback();
   }
+
+  // POSTs once. Returns ms to wait before retrying (429/5xx/network), or null when there's nothing to retry.
+  private async deliver(webhookUrl: string, body: unknown): Promise<number | null> {
+    try {
+      const { status, headers } = await this.axiosInstance.post(webhookUrl, body);
+      if (status === 200) return null; // delivered
+      if (status === 429) return parseRetryAfterMs(headers?.["retry-after"]) ?? RETRY_FALLBACK_MS;
+      if (status >= 500) return RETRY_FALLBACK_MS;
+      return null; // permanent 4xx (bad payload / disabled webhook) — don't retry
+    } catch {
+      return RETRY_FALLBACK_MS; // network error — retry
+    }
+  }
+}
+
+// Parse a Slack Retry-After header (integer seconds) into milliseconds; null when absent/unparseable.
+export function parseRetryAfterMs(headerValue: unknown): number | null {
+  if (headerValue == null) return null;
+  const seconds = Number(Array.isArray(headerValue) ? headerValue[0] : headerValue);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000) : null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function processMessageBlocks(blocks: Block[]): Block[][] {
