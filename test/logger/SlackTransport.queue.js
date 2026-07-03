@@ -45,6 +45,30 @@ describe("SlackTransport: rate-limited delivery", function () {
     assert.equal(post.callCount, 3);
   });
 
+  it("enforces spacing across drain sessions (an emptied queue does not reset the rate limit)", async function () {
+    const t = transport();
+    emit(t, 1);
+    assert.equal(post.callCount, 1);
+    await clock.tickAsync(400); // queue fully drained; next message arrives shortly after
+    emit(t, 2);
+    assert.equal(post.callCount, 1, "second send must wait out the remainder of the interval");
+    await clock.tickAsync(599);
+    assert.equal(post.callCount, 1);
+    await clock.tickAsync(1);
+    assert.equal(post.callCount, 2, "second send fires one interval after the first");
+  });
+
+  it("reports isFlushed only once every queue has drained (waitForLogger relies on this)", async function () {
+    const t = transport();
+    assert.isTrue(t.isFlushed, "flushed before anything is queued");
+    emit(t, 1);
+    emit(t, 2);
+    assert.isFalse(t.isFlushed, "not flushed while messages are queued or in flight");
+    await clock.tickAsync(1000); // first sends immediately, second one interval later
+    assert.equal(post.callCount, 2);
+    assert.isTrue(t.isFlushed, "flushed after the queue drains");
+  });
+
   it("waits the Retry-After duration on a 429 and then redelivers", async function () {
     post.onCall(0).resolves({ status: 429, headers: { "retry-after": "2" } });
     post.onCall(1).resolves({ status: 200, headers: {} });

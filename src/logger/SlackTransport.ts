@@ -175,6 +175,8 @@ class SlackHook extends Transport {
   // One FIFO queue and at most one in-flight drain per webhook URL (Slack's rate limit is per-webhook).
   private readonly queues = new Map<string, { body: unknown; attempts: number }[]>();
   private readonly draining = new Set<string>();
+  // Timestamp of the last POST per webhook, so spacing holds even across separate drain sessions.
+  private readonly lastSendAt = new Map<string, number>();
 
   constructor(opts: Options) {
     super(opts);
@@ -220,6 +222,12 @@ class SlackHook extends Transport {
     void this.drain(webhookUrl);
   }
 
+  // Getter for checking if the transport is flushed (waitForLogger blocks on this before a bot exits).
+  get isFlushed(): boolean {
+    if (this.draining.size > 0) return false;
+    return Array.from(this.queues.values()).every((queue) => queue.length === 0);
+  }
+
   // Drains a webhook's queue one message at a time, spaced by minSendIntervalMs, retrying 429s and 5xx.
   private async drain(webhookUrl: string): Promise<void> {
     if (this.draining.has(webhookUrl)) return;
@@ -227,14 +235,20 @@ class SlackHook extends Transport {
     const queue = this.queues.get(webhookUrl) ?? [];
     try {
       while (queue.length > 0) {
+        // Enforce spacing against the previous POST, even when it happened in an earlier drain session.
+        const sinceLast = Date.now() - (this.lastSendAt.get(webhookUrl) ?? -Infinity);
+        if (sinceLast < this.minSendIntervalMs) await sleep(this.minSendIntervalMs - sinceLast);
         const message = queue[0];
         message.attempts += 1;
+        this.lastSendAt.set(webhookUrl, Date.now());
         const retryMs = await this.deliver(webhookUrl, message.body);
         if (retryMs !== null && message.attempts <= MAX_RETRIES) {
           await sleep(retryMs); // wait Slack's Retry-After (or fallback), then retry the same message
-        } else {
-          queue.shift(); // delivered, permanently failed, or out of retries
-          if (queue.length > 0) await sleep(this.minSendIntervalMs);
+        } else if (queue[0] === message) {
+          // Delivered, permanently failed, or out of retries. The identity check matters: under overload,
+          // enqueue's drop-oldest may already have shifted this message out while the POST was in flight,
+          // and blindly shifting here would silently drop a message that was never attempted.
+          queue.shift();
         }
       }
     } finally {
