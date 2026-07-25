@@ -37,11 +37,13 @@ jobs:
       # Setup .npmrc file to publish to npm
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      # Pinned to a major rather than `latest`: npm majors raise their required node version over time
+      # (npm@12 dropped node 20 and broke this workflow), so `latest` can break the release at any moment.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@12
 
       - name: Log Node & npm versions (after update)
         # Make sure we hit 11.5.1 version requirement for Trusted Publishing
