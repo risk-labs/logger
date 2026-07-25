@@ -31,6 +31,7 @@ import winston from "winston";
 import { PagerDutyTransport } from "./PagerDutyTransport";
 import { PagerDutyV2Transport } from "./PagerDutyV2Transport";
 import { TransportError } from "./TransportError";
+import { createConsoleTransport } from "./ConsoleTransport";
 import { createTransports } from "./Transports";
 import { botIdentifyFormatter, errorStackTracerFormatter, bigNumberFormatter } from "./Formatters";
 import { noBotId } from "../constants";
@@ -98,12 +99,15 @@ function createBaseLogger(
 
 // Filter to select reliable transports that can be used to log transport execution errors from other transports.
 // Currently only PagerDuty transports are supported and only if they are explicitly configured to log transport errors.
+// When none are configured, fall back to a console transport: without it the transport-error logger has no
+// transports at all and failures of the primary transports are silently dropped.
 function filterLogErrorTransports(transports: Transport[]): Transport[] {
-  return transports.filter(
+  const errorTransports = transports.filter(
     (transport) =>
       (transport instanceof PagerDutyTransport || transport instanceof PagerDutyV2Transport) &&
       transport.logTransportErrors,
   );
+  return errorTransports.length > 0 ? errorTransports : [createConsoleTransport()];
 }
 
 // Signal pause queue processing from persistent storage on all transports that support it.
