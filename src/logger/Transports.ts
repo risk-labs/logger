@@ -22,7 +22,8 @@ import type Transport from "winston-transport";
 import dotenv from "dotenv";
 import minimist from "minimist";
 
-dotenv.config();
+// quiet suppresses dotenv's startup log line; this config() runs as an import side effect in every consumer.
+dotenv.config({ quiet: true });
 const argv = minimist(process.argv.slice(), {});
 
 type SlackConfig = Parameters<typeof createSlackTransport>[0];
