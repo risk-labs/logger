@@ -7,6 +7,11 @@ import Transport from "winston-transport";
 
 type TransportOptions = ConstructorParameters<typeof Transport>[0];
 
+// Timeout applied to every webhook post. Without it a single hung socket holds a request open forever. Since the
+// transport only invokes the winston callback once the queue drains, and winston pauses the shared logger stream once
+// a transport stops acknowledging writes, that one socket is enough to stop every transport from emitting.
+export const DISCORD_REQUEST_TIMEOUT_MS = 10_000;
+
 // Interface for log info object.
 interface DiscordInfo {
   message: string;
@@ -137,7 +142,7 @@ export class DiscordTransport extends Transport {
     while (this.logQueue.length > 0) {
       try {
         // Pop off the first element (oldest) and try send it to discord. If this errors then we are being rate limited.
-        await postJson(this.logQueue[0].webHook, this.logQueue[0].body);
+        await postJson(this.logQueue[0].webHook, this.logQueue[0].body, { timeoutMs: DISCORD_REQUEST_TIMEOUT_MS });
         this.logQueue.shift(); // If the request does not fail remove it from the log queue as having been executed.
       } catch (error: unknown) {
         // Extract the retry_after from the response. This is the Discord API telling us how long to back off for.

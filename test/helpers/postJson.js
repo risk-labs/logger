@@ -62,6 +62,26 @@ describe("postJson", function () {
     assert.equal(error.data, "<html>502 Bad Gateway</html>");
   });
 
+  it("Aborts the request once timeoutMs elapses", async function () {
+    // Stand in for a webhook that accepts the connection and never answers.
+    fetchStub.callsFake(
+      (url, init) =>
+        new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
+    );
+
+    const error = await postJson(URL, {}, { timeoutMs: 20 }).catch((error) => error);
+
+    assert.equal(error.name, "TimeoutError");
+  });
+
+  it("Sends no abort signal when no timeout is configured", async function () {
+    fetchStub.resolves(new Response("ok", { status: 200 }));
+
+    await postJson(URL, {});
+
+    assert.isUndefined(fetchStub.firstCall.args[1].signal);
+  });
+
   it("Propagates network failures untouched", async function () {
     const networkError = new TypeError("fetch failed");
     fetchStub.rejects(networkError);
