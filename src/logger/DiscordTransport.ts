@@ -1,16 +1,27 @@
-import { delay } from "../helpers/delay";
 import { HttpError, postJson } from "../helpers/postJson";
 import { isDictionary } from "../helpers/typeGuards";
+import { AsyncLogQueue } from "./AsyncLogQueue";
 import { TransportError } from "./TransportError";
 
 import Transport from "winston-transport";
 
 type TransportOptions = ConstructorParameters<typeof Transport>[0];
 
-// Timeout applied to every webhook post. Without it a single hung socket holds a request open forever. Since the
-// transport only invokes the winston callback once the queue drains, and winston pauses the shared logger stream once
-// a transport stops acknowledging writes, that one socket is enough to stop every transport from emitting.
+// Timeout applied to every webhook post. Without it a single hung socket holds a request open forever, parking the
+// queue behind it until it fills up and starts shedding messages.
 export const DISCORD_REQUEST_TIMEOUT_MS = 10_000;
+
+// Bounds the memory held by a flood: beyond this many pending messages the oldest are dropped and reported in a
+// summary message.
+export const DISCORD_MAX_QUEUE_SIZE = 1000;
+
+// Discord replies with 429 and a `retry_after` (in seconds) in the response body when a webhook is being posted to
+// faster than its rate limit allows. Everything else is a genuine delivery failure and is reported rather than retried.
+function discordRetryDelaySeconds(error: unknown): number | undefined {
+  if (!(error instanceof HttpError) || error.status !== 429) return undefined;
+  const retryAfter = Number((error.data as { retry_after?: unknown } | null)?.retry_after);
+  return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 1;
+}
 
 // Interface for log info object.
 interface DiscordInfo {
@@ -28,6 +39,7 @@ interface Body {
 interface QueueElement {
   body: Body;
   webHook: string;
+  info: unknown; // Retained only so that a failed delivery can be reported with the log entry that produced it.
 }
 
 // Type guard for log info object.
@@ -48,10 +60,8 @@ export class DiscordTransport extends Transport {
   private readonly escalationPathWebhookUrls: { [key: string]: string };
   private readonly postOnNonEscalationPaths: boolean;
 
-  private logQueue: QueueElement[];
-  private isQueueBeingExecuted: boolean;
-
-  private enqueuedLogCounter: number;
+  private readonly maxQueueSize: number;
+  private readonly logQueue: AsyncLogQueue<QueueElement>;
 
   constructor(
     winstonOpts: TransportOptions,
@@ -59,6 +69,7 @@ export class DiscordTransport extends Transport {
       defaultWebHookUrl: string;
       escalationPathWebhookUrls: { [key: string]: string };
       postOnNonEscalationPaths: boolean;
+      maxQueueSize?: number;
     },
   ) {
     super(winstonOpts);
@@ -66,26 +77,35 @@ export class DiscordTransport extends Transport {
     this.escalationPathWebhookUrls = ops.escalationPathWebhookUrls ?? {};
     this.postOnNonEscalationPaths = ops.postOnNonEscalationPaths ?? true;
 
-    this.logQueue = [];
-    this.isQueueBeingExecuted = false;
-    this.enqueuedLogCounter = 0;
+    this.maxQueueSize = ops.maxQueueSize ?? DISCORD_MAX_QUEUE_SIZE;
+    this.logQueue = new AsyncLogQueue<QueueElement>({
+      maxQueueSize: this.maxQueueSize,
+      deliver: async ({ webHook, body }) => {
+        await postJson(webHook, body, { timeoutMs: DISCORD_REQUEST_TIMEOUT_MS });
+      },
+      onError: (error, { info }) => {
+        // The winston callback has long since fired, so surface this on the transport instead. winston forwards it to
+        // the logger's error event, where the existing transportErrorLogger plumbing picks it up.
+        this.emit("error", new TransportError("Discord", error, info));
+      },
+      onDropped: (droppedCount) => this.reportDroppedMessages(droppedCount),
+      retryDelaySeconds: discordRetryDelaySeconds,
+    });
   }
 
   // Getter for checking if the transport is flushed.
   get isFlushed(): boolean {
-    return this.enqueuedLogCounter === 0;
+    return this.logQueue.isFlushed;
   }
 
   // Note: info must be any because that's what the base class uses.
-  async log(info: any, callback: (error?: unknown) => void): Promise<void> {
+  log(info: any, callback: (error?: unknown) => void): void {
     // We only try sending if we have message and mrkdwn.
     // Also if discordPaths is null when provided then this is a noop message for Discord and the log should be skipped
     const canSend = isDiscordInfo(info) && info.discordPaths !== null;
 
     if (canSend) {
       try {
-        this.enqueuedLogCounter++; // Used by isFlushed getter. Make sure to decrement when done or catching an error.
-
         const body = {
           username: "UMA Infrastructure",
           avatar_url: "https://i.imgur.com/RCcxxEZ.png",
@@ -114,54 +134,34 @@ export class DiscordTransport extends Transport {
               : [this.defaultWebHookUrl];
         }
 
-        // Send webhook request to each of the configured webhooks upstream. This posts the messages on Discord. Add
-        // them to log queue to avoid hitting the discord rate limit.
-        if (webHooks.length > 0) for (const webHook of webHooks) this.logQueue.push({ webHook, body });
-
-        await this.executeLogQueue(); // Start processing the log que.
-        this.enqueuedLogCounter--; // Decrement counter for the isFlushed getter when done.
+        // Queue a webhook request for each of the configured webhooks upstream. The queue posts them sequentially,
+        // backing off when Discord rate limits us.
+        for (const webHook of webHooks) this.logQueue.enqueue({ webHook, body, info });
       } catch (error) {
-        this.enqueuedLogCounter--; // Decrement the counter for the isFlushed getter when catching an error.
         return callback(new TransportError("Discord", error, info));
       }
     }
 
+    // Acknowledge the write immediately: delivery happens in the background so that a slow or unresponsive webhook can
+    // never apply backpressure to the winston pipeline and stall every other transport.
     callback();
   }
 
-  // Processes a queue of logs produced by the transport. Executes sequentially and listens to the response from the
-  // Discord API to back off and sleep if we are exceeding their rate limiting. Sets the parent transports isFlushed
-  // variable to block the bot from closing until the whole queue has been flushed.
-  private async executeLogQueue(backOffDuration = 0): Promise<void> {
-    if (this.isQueueBeingExecuted) return; // If the queue is currently being executed, return.
-    this.isQueueBeingExecuted = true; // Set the queue to being executed.
-
-    // If the previous iteration set a backOffDuration then wait for this duration.
-    if (backOffDuration != 0) await delay(backOffDuration);
-
-    while (this.logQueue.length > 0) {
-      try {
-        // Pop off the first element (oldest) and try send it to discord. If this errors then we are being rate limited.
-        await postJson(this.logQueue[0].webHook, this.logQueue[0].body, { timeoutMs: DISCORD_REQUEST_TIMEOUT_MS });
-        this.logQueue.shift(); // If the request does not fail remove it from the log queue as having been executed.
-      } catch (error: unknown) {
-        // Extract the retry_after from the response. This is the Discord API telling us how long to back off for.
-        const retryAfter =
-          error instanceof HttpError ? Number((error.data as { retry_after?: unknown } | null)?.retry_after) : NaN;
-        // If they tell us to back off for more than a minute then ignore it and cap at 1 min. This is enough time in
-        // practice to recover from a rate limit while not making the bot hang indefinitely. Anything that is not a
-        // rate limit response retries immediately, as it did before.
-        const _backOffDuration = Number.isFinite(retryAfter) ? Math.min(retryAfter, 60) : 0;
-        // We removed the element in the shift above, push it back on to the start of the queue to not drop any message.
-        // As we have errored we now need to re-enter the executeLogQuery method. Set isQueueBeingExecuted to false and
-        // re-call the executeLogQuery. This will initiate the backoff delay and then continue to process the queue.
-        this.isQueueBeingExecuted = false;
-        await this.executeLogQueue(_backOffDuration);
-      }
-    }
-
-    // Unlock the queue execution.
-    this.isQueueBeingExecuted = false;
+  // Posts a single summary in place of the messages shed during a flood, so that a gap in the channel is never silent.
+  // Drops are counted across all webhooks but reported on the default one, since that is the channel that is watched.
+  private reportDroppedMessages(droppedCount: number): void {
+    const description =
+      `Dropped ${droppedCount} log message(s) after exceeding the Discord transport queue limit of ` +
+      `${this.maxQueueSize}. The dropped logs are still available in the console and GCP logs.`;
+    this.logQueue.enqueue({
+      webHook: this.defaultWebHookUrl,
+      body: {
+        username: "UMA Infrastructure",
+        avatar_url: "https://i.imgur.com/RCcxxEZ.png",
+        embeds: [{ title: "Dropped log messages", description, color: 9696729 }],
+      },
+      info: { at: "DiscordTransport", message: "Dropped log messages", droppedCount },
+    });
   }
 
   // Discord URLS are formatted differently to markdown links produced upstream in the bots. For example, slack links
