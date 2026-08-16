@@ -51,6 +51,11 @@ interface SlackFormatterResponse {
 
 export const SLACK_MAX_CHAR_LIMIT = 3000;
 
+// Timeout applied to every webhook post. Without it a single hung socket holds a request open forever. Since the
+// transport only invokes the winston callback once the post settles, and winston pauses the shared logger stream once
+// a transport stops acknowledging writes, that one socket is enough to stop every transport from emitting.
+export const SLACK_REQUEST_TIMEOUT_MS = 10_000;
+
 // Note: info is any because it comes directly from winston.
 function slackFormatter(info: any): SlackFormatterResponse {
   try {
@@ -175,6 +180,7 @@ class SlackHook extends Transport {
     this.mrkdwn = opts.mrkdwn || false;
     this.axiosInstance = axios.create({
       proxy: opts.proxy,
+      timeout: SLACK_REQUEST_TIMEOUT_MS,
       validateStatus: (status) => {
         return status == 200;
       },
