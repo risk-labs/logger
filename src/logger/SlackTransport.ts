@@ -25,6 +25,7 @@ import Transport from "winston-transport";
 import axios from "axios";
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
 
+import { AsyncLogQueue } from "./AsyncLogQueue";
 import { TransportError } from "./TransportError";
 
 interface MarkdownText {
@@ -50,6 +51,14 @@ interface SlackFormatterResponse {
 }
 
 export const SLACK_MAX_CHAR_LIMIT = 3000;
+
+// Timeout applied to every webhook post. Without it a single hung socket holds a request open forever, which used to
+// take the whole logger down with it (see AsyncLogQueue for why).
+export const SLACK_REQUEST_TIMEOUT_MS = 10_000;
+
+// Slack incoming webhooks drain at roughly one message per second, so the queue has to absorb bursts. This bounds the
+// memory held by a flood: beyond this many pending messages the oldest are dropped and reported in a summary message.
+export const SLACK_MAX_QUEUE_SIZE = 1000;
 
 // Note: info is any because it comes directly from winston.
 function slackFormatter(info: any): SlackFormatterResponse {
@@ -145,6 +154,22 @@ function slackFormatter(info: any): SlackFormatterResponse {
   }
 }
 
+type SlackPayload = { blocks?: Block[]; text?: string; mrkdwn?: boolean };
+
+interface QueueElement {
+  webhookUrl: string;
+  payload: SlackPayload;
+  info: any; // Retained only so that a failed delivery can be reported with the log entry that produced it.
+}
+
+// Slack returns 429 with a `Retry-After` header (in seconds) when a webhook is posted to faster than it drains.
+// Everything else is a genuine delivery failure and is reported rather than retried.
+function slackRetryDelaySeconds(error: unknown): number | undefined {
+  if (!axios.isAxiosError(error) || error.response?.status !== 429) return undefined;
+  const retryAfter = Number(error.response.headers?.["retry-after"]);
+  return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 1;
+}
+
 type TransportOptions = NonNullable<ConstructorParameters<typeof Transport>[0]>;
 interface Options extends TransportOptions {
   name?: string;
@@ -155,6 +180,7 @@ interface Options extends TransportOptions {
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
   proxy?: AxiosRequestConfig["proxy"];
+  maxQueueSize?: number;
 }
 
 class SlackHook extends Transport {
@@ -164,6 +190,8 @@ class SlackHook extends Transport {
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
   private readonly axiosInstance: AxiosInstance;
+  private readonly maxQueueSize: number;
+  private readonly logQueue: AsyncLogQueue<QueueElement>;
 
   constructor(opts: Options) {
     super(opts);
@@ -175,35 +203,76 @@ class SlackHook extends Transport {
     this.mrkdwn = opts.mrkdwn || false;
     this.axiosInstance = axios.create({
       proxy: opts.proxy,
+      timeout: SLACK_REQUEST_TIMEOUT_MS,
       validateStatus: (status) => {
         return status == 200;
       },
     });
+    this.maxQueueSize = opts.maxQueueSize ?? SLACK_MAX_QUEUE_SIZE;
+    this.logQueue = new AsyncLogQueue<QueueElement>({
+      maxQueueSize: this.maxQueueSize,
+      deliver: async ({ webhookUrl, payload }) => {
+        await this.axiosInstance.post(webhookUrl, payload);
+      },
+      onError: (error, { info }) => {
+        // The winston callback has long since fired, so surface this on the transport instead. winston forwards it to
+        // the logger's error event, where the existing transportErrorLogger plumbing picks it up.
+        this.emit("error", new TransportError("Slack", error, info));
+      },
+      onDropped: (droppedCount) => this.reportDroppedMessages(droppedCount),
+      retryDelaySeconds: slackRetryDelaySeconds,
+    });
   }
 
-  async log(info: any, callback: (error?: unknown) => void): Promise<void> {
+  // Getter for checking if the transport is flushed. Used by waitForLogger to block termination until the queue drains.
+  get isFlushed(): boolean {
+    return this.logQueue.isFlushed;
+  }
+
+  // Note: info must be any because that's what the base class uses.
+  log(info: any, callback: (error?: unknown) => void): void {
     try {
       // If the log contains a notification path then use a custom slack webhook service. This lets the transport route to
       // different slack channels depending on the context of the log.
       const webhookUrl = this.escalationPathWebhookUrls[info.notificationPath] ?? this.defaultWebHookUrl;
 
-      const payload: { blocks?: Block[]; text?: string; mrkdwn?: boolean } = { mrkdwn: this.mrkdwn };
-      const layout = this.formatter(info);
-      payload.blocks = layout.blocks || undefined;
-      // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
-      if (JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) {
-        await this.axiosInstance.post(webhookUrl, payload);
-      } else {
-        // Iterate over each message to send and generate a axios call for each message.
-        for (const processedBlock of processMessageBlocks(payload.blocks)) {
-          payload.blocks = processedBlock;
-          await this.axiosInstance.post(webhookUrl, payload);
-        }
-      }
+      // Formatting is cheap and synchronous; only delivery is queued. Anything that throws here is a bug in the
+      // formatter and is reported to winston directly, as it would have been before the queue existed.
+      for (const payload of this.buildPayloads(info)) this.logQueue.enqueue({ webhookUrl, payload, info });
     } catch (error) {
       return callback(new TransportError("Slack", error, info));
     }
+
+    // Acknowledge the write immediately: delivery happens in the background so that a slow or unresponsive webhook can
+    // never apply backpressure to the winston pipeline and stall every other transport.
     callback();
+  }
+
+  // Turns one log entry into the payloads to post. Slack rejects messages over the character limit, so oversized
+  // entries are split into several messages, each with its own payload object.
+  private buildPayloads(info: any): SlackPayload[] {
+    const blocks: Block[] | undefined = this.formatter(info).blocks || undefined;
+    const payload: SlackPayload = { mrkdwn: this.mrkdwn, blocks };
+
+    // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
+    if (blocks === undefined || JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) return [payload];
+
+    // Otherwise split it into one payload per message. Each gets its own object: they are queued, not posted
+    // immediately, so they cannot share (and overwrite) a single payload.
+    return processMessageBlocks(blocks).map((processedBlock) => ({ mrkdwn: this.mrkdwn, blocks: processedBlock }));
+  }
+
+  // Posts a single summary in place of the messages shed during a flood, so that a gap in the channel is never silent.
+  // Drops are counted across all webhooks but reported on the default one, since that is the channel that is watched.
+  private reportDroppedMessages(droppedCount: number): void {
+    const text =
+      `[warn] *SlackTransport*⭢Dropped ${droppedCount} log message(s) after exceeding the queue limit of ` +
+      `${this.maxQueueSize}. The dropped logs are still available in the console and GCP logs.\n`;
+    this.logQueue.enqueue({
+      webhookUrl: this.defaultWebHookUrl,
+      payload: { mrkdwn: this.mrkdwn, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] },
+      info: { at: "SlackTransport", message: "Dropped log messages", droppedCount },
+    });
   }
 }
 
