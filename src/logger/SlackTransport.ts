@@ -50,6 +50,11 @@ interface SlackFormatterResponse {
 
 export const SLACK_MAX_CHAR_LIMIT = 3000;
 
+// Timeout applied to every webhook post. Without it a single hung socket holds a request open forever. Since the
+// transport only invokes the winston callback once the post settles, and winston pauses the shared logger stream once
+// a transport stops acknowledging writes, that one socket is enough to stop every transport from emitting.
+export const SLACK_REQUEST_TIMEOUT_MS = 10_000;
+
 // Note: info is any because it comes directly from winston.
 function slackFormatter(info: any): SlackFormatterResponse {
   try {
@@ -183,12 +188,12 @@ class SlackHook extends Transport {
       payload.blocks = layout.blocks || undefined;
       // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
       if (JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) {
-        await postJson(webhookUrl, payload);
+        await postJson(webhookUrl, payload, { timeoutMs: SLACK_REQUEST_TIMEOUT_MS });
       } else {
         // Iterate over each message to send and generate a request for each message.
         for (const processedBlock of processMessageBlocks(payload.blocks)) {
           payload.blocks = processedBlock;
-          await postJson(webhookUrl, payload);
+          await postJson(webhookUrl, payload, { timeoutMs: SLACK_REQUEST_TIMEOUT_MS });
         }
       }
     } catch (error) {

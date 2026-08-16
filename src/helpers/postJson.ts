@@ -15,13 +15,19 @@ export class HttpError extends Error {
   }
 }
 
+export interface PostJsonOptions {
+  // Aborts the request when the server has not responded within this many milliseconds.
+  timeoutMs?: number;
+}
+
 // POSTs body as JSON. Resolves on any 2xx, throws HttpError otherwise, and propagates whatever fetch throws (DNS
-// failure, connection reset, and -- once a signal is passed -- abort) untouched.
-export async function postJson(url: string, body: unknown): Promise<void> {
+// failure, connection reset, timeout abort) untouched.
+export async function postJson(url: string, body: unknown, { timeoutMs }: PostJsonOptions = {}): Promise<void> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
   });
 
   // Always drain the body, even when it is not needed: an unread body holds the connection open.
