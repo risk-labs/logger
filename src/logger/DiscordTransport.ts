@@ -1,10 +1,9 @@
 import { delay } from "../helpers/delay";
+import { HttpError, postJson } from "../helpers/postJson";
 import { isDictionary } from "../helpers/typeGuards";
 import { TransportError } from "./TransportError";
 
 import Transport from "winston-transport";
-
-import axios from "axios";
 
 type TransportOptions = ConstructorParameters<typeof Transport>[0];
 
@@ -138,14 +137,16 @@ export class DiscordTransport extends Transport {
     while (this.logQueue.length > 0) {
       try {
         // Pop off the first element (oldest) and try send it to discord. If this errors then we are being rate limited.
-        await axios.post(this.logQueue[0].webHook, this.logQueue[0].body);
+        await postJson(this.logQueue[0].webHook, this.logQueue[0].body);
         this.logQueue.shift(); // If the request does not fail remove it from the log queue as having been executed.
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Extract the retry_after from the response. This is the Discord API telling us how long to back off for.
-        let _backOffDuration = error?.response?.data.retry_after;
+        const retryAfter =
+          error instanceof HttpError ? Number((error.data as { retry_after?: unknown } | null)?.retry_after) : NaN;
         // If they tell us to back off for more than a minute then ignore it and cap at 1 min. This is enough time in
-        // practice to recover from a rate limit while not making the bot hang indefinitely.
-        if (_backOffDuration > 60) _backOffDuration = 60;
+        // practice to recover from a rate limit while not making the bot hang indefinitely. Anything that is not a
+        // rate limit response retries immediately, as it did before.
+        const _backOffDuration = Number.isFinite(retryAfter) ? Math.min(retryAfter, 60) : 0;
         // We removed the element in the shift above, push it back on to the start of the queue to not drop any message.
         // As we have errored we now need to re-enter the executeLogQuery method. Set isQueueBeingExecuted to false and
         // re-call the executeLogQuery. This will initiate the backoff delay and then continue to process the queue.
