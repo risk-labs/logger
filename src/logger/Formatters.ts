@@ -47,13 +47,17 @@ export function botIdentifyFormatter(botIdentifier: string, runIdentifier: strin
   };
 }
 
-// Traverse a potentially nested object and replace any element that is either a Ethers BigNumber or web3 BigNumber
-// with the string version of it for easy logging.
+// Traverse a potentially nested object and replace any element that is a native bigint, an Ethers BigNumber or a
+// web3 BigNumber with the string version of it for easy logging.
 const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    if (stringifiableBigNumberLike(value)) {
+    // A native bigint is a primitive, so it never matches stringifiableBigNumberLike below. Left as-is it
+    // reaches the transports, where JSON.stringify throws "Do not know how to serialize a BigInt".
+    if (typeof value === "bigint") {
+      return [key, value.toString()];
+    } else if (stringifiableBigNumberLike(value)) {
       return [key, value.toString()];
     } else if (typeof value === "object") {
       if (typeof value?.toJSON === "function") {
