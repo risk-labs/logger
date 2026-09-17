@@ -68,4 +68,41 @@ describe("BigNumberFormatter", function () {
     assert.notDeepEqual(output, deepCopy);
     assert.deepEqual(shallowCopy, deepCopy);
   });
+
+  it("Should replace native bigints, nested and alongside BNs", function () {
+    const sample = {
+      big: 10n,
+      nested: { big: 100n, doubleNested: { bn: BigNumber.from(1000), big: 10000n } },
+    };
+
+    assert.deepEqual(bigNumberFormatter(sample), {
+      big: "10",
+      nested: { big: "100", doubleNested: { bn: "1000", big: "10000" } },
+    });
+  });
+
+  it("Should keep the full precision of a bigint beyond double range", function () {
+    // u64 max; a Number downcast would lose the low bits, so the string form is load-bearing.
+    const sample = { big: 18446744073709551615n };
+
+    assert.deepEqual(bigNumberFormatter(sample), { big: "18446744073709551615" });
+  });
+
+  it("Formatted entries containing a bigint are JSON serializable", function () {
+    // The transports JSON.stringify the formatted entry, which throws on a native bigint.
+    const sample = { at: "test", nested: { big: 10n } };
+
+    assert.throws(() => JSON.stringify(sample), TypeError);
+    assert.equal(JSON.stringify(bigNumberFormatter(sample)), '{"at":"test","nested":{"big":"10"}}');
+  });
+
+  it("Only parts of the object that involve bigints are deep copied", function () {
+    const sample = { plain: { val: 100 }, withBig: { val: 10n } };
+    const plainShallowCopy = sample.plain;
+
+    const output = bigNumberFormatter(sample);
+
+    assert.deepEqual(output, { plain: { val: 100 }, withBig: { val: "10" } });
+    assert.equal(output.plain, plainShallowCopy);
+  });
 });
