@@ -206,7 +206,9 @@ class SlackHook extends Transport {
         }
       }
     } catch (error) {
-      return callback(new TransportError("Slack", error, info));
+      // The timeout is the only abort source; axios reports it as a bare "canceled".
+      const reason = axios.isCancel(error) ? new Error(`Post timed out after ${this.timeoutMs}ms`) : error;
+      return callback(new TransportError("Slack", reason, info));
     }
     callback();
   }
