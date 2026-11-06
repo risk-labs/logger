@@ -53,11 +53,8 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    // A native bigint is a primitive, so it never matches stringifiableBigNumberLike below. Left as-is it
-    // reaches the transports, where JSON.stringify throws "Do not know how to serialize a BigInt".
-    if (typeof value === "bigint") {
-      return [key, value.toString()];
-    } else if (stringifiableBigNumberLike(value)) {
+    // Native bigints are primitives, so stringifiableBigNumberLike misses them; JSON.stringify throws on them.
+    if (typeof value === "bigint" || stringifiableBigNumberLike(value)) {
       return [key, value.toString()];
     } else if (typeof value === "object") {
       if (typeof value?.toJSON === "function") {
