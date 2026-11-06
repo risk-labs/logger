@@ -3,6 +3,7 @@ import axios from "axios";
 import { createHash, randomUUID } from "crypto";
 import * as ss from "superstruct";
 import { TransportError } from "./TransportError";
+import { delay } from "../helpers/delay";
 
 const Destination = ss.object({
   url: ss.pattern(ss.string(), /^https:\/\/api\.incident\.io\/v2\/alert_events\/http\/[A-Za-z0-9_-]+$/),
@@ -43,6 +44,15 @@ export function pagingUrgency(destination: Config["destination"], level: string,
   return urgency === "severity_based" ? (["warn", "warning", "info"].includes(level) ? "low" : "high") : urgency;
 }
 
+const MAX_ATTEMPTS = 3;
+
+// incident.io sends Retry-After in seconds with a 429. Honour it, capped at the logger's default 30s flush timeout:
+// a longer wait cannot deliver before a shutting-down bot exits. Without it, back off exponentially.
+export function retryDelay(retryAfter: unknown, attempt: number): number {
+  if (typeof retryAfter === "string" && /^\d+$/.test(retryAfter.trim())) return Math.min(Number(retryAfter), 30);
+  return 0.25 * 2 ** (attempt - 1);
+}
+
 // An independent Winston transport: PagerDuty keeps its existing destination,
 // delivery and failure handling. No PagerDuty webhook or API result is used.
 export class IncidentIOTransport extends Transport {
@@ -80,36 +90,43 @@ export class IncidentIOTransport extends Transport {
           paging_urgency: pagingUrgency(destination, info.level),
         },
       };
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const response = await axios.post(destination.url, payload, {
-            headers: { Authorization: `Bearer ${destination.token}` },
-            timeout: 5000,
-            maxRedirects: 0,
-          });
-          if (
-            !["accepted", "success"].includes(response.data?.status) ||
-            response.data?.deduplication_key !== deduplicationKey
-          ) {
-            throw new Error("incident.io did not confirm the event key");
-          }
-          callback();
-          return;
-        } catch (error) {
-          const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-          const retryable = status === undefined || status === 429 || status >= 500;
-          if (!retryable || attempt === 2) {
-            // Axios errors contain credentials and payloads. Never expose them
-            // to the logger's error handlers or stringify the original error.
-            throw new Error(`incident.io delivery failed${status ? ` (HTTP ${status})` : ""}`);
-          }
-          await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
-        }
-      }
+      await this.deliver(destination, payload);
+      callback();
     } catch (error) {
       callback(new TransportError("incident.io", error, info));
     } finally {
       this.pending--;
+    }
+  }
+
+  private async deliver(destination: Config["destination"], payload: { deduplication_key: string }): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      // Every HTTP status resolves, so only network errors and timeouts reject. Axios errors contain credentials
+      // and payloads, so drop them unread rather than expose them to the logger's error handlers.
+      const response = await axios
+        .post(destination.url, payload, {
+          headers: { Authorization: `Bearer ${destination.token}` },
+          timeout: 5000,
+          maxRedirects: 0,
+          validateStatus: () => true,
+        })
+        .catch(() => undefined);
+      const status = response?.status;
+      const ok = status !== undefined && status >= 200 && status < 300;
+      if (
+        ok &&
+        ["accepted", "success"].includes(response?.data?.status) &&
+        response?.data?.deduplication_key === payload.deduplication_key
+      ) {
+        return;
+      }
+      // Retries reuse the event key, so an unconfirmed 2xx is safe to resend.
+      const retryable = status === undefined || ok || status === 429 || status >= 500;
+      if (!retryable || attempt === MAX_ATTEMPTS) {
+        const reason = ok ? "event key not confirmed" : status ? `HTTP ${status}` : "no response";
+        throw new Error(`incident.io delivery failed (${reason})`);
+      }
+      await delay(retryDelay(response?.headers?.["retry-after"], attempt));
     }
   }
 }
