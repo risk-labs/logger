@@ -104,4 +104,14 @@ describe("BigNumberFormatter", function () {
     assert.deepEqual(output, { plain: { val: 100 }, withBig: { val: "10" } });
     assert.equal(output.plain, plainShallowCopy);
   });
+
+  it("Arrays stay arrays when their elements are replaced", function () {
+    const sample = { bigs: [1n, 2n], bns: [BigNumber.from(3), new BN("4")], fills: [{ amt: 5n }], plain: [6] };
+    const plainShallowCopy = sample.plain;
+
+    const output = bigNumberFormatter(sample);
+
+    assert.equal(JSON.stringify(output), '{"bigs":["1","2"],"bns":["3","4"],"fills":[{"amt":"5"}],"plain":[6]}');
+    assert.equal(output.plain, plainShallowCopy);
+  });
 });

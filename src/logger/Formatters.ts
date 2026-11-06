@@ -76,8 +76,10 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // If no changes were detected, no copy is needed and it is fine to discard the copy and return the original object.
   const copyNeeded = replacements.some(([key, value]) => obj[key] !== value);
 
-  // Only copy if something changed. Otherwise, return the original object.
-  return copyNeeded ? Object.fromEntries(replacements) : obj;
+  // Only copy if something changed. Otherwise, return the original object. Arrays are copied as arrays.
+  if (!copyNeeded) return obj;
+  const copy = Object.fromEntries(replacements);
+  return Array.isArray(obj) ? Object.assign([], copy) : copy;
 };
 
 // This function is a best effort dependency-free reimplementation of the following evaluation:
