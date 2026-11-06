@@ -47,13 +47,14 @@ export function botIdentifyFormatter(botIdentifier: string, runIdentifier: strin
   };
 }
 
-// Traverse a potentially nested object and replace any element that is either an Ethers BigNumber or a bn.js BN
-// with the string version of it for easy logging.
+// Traverse a potentially nested object and replace any element that is a native bigint, an Ethers BigNumber or a
+// bn.js BN with the string version of it for easy logging.
 const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    if (stringifiableBigNumberLike(value)) {
+    // Native bigints are primitives, so stringifiableBigNumberLike misses them; JSON.stringify throws on them.
+    if (typeof value === "bigint" || stringifiableBigNumberLike(value)) {
       return [key, value.toString()];
     } else if (typeof value === "object") {
       if (typeof value?.toJSON === "function") {
@@ -72,8 +73,10 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // If no changes were detected, no copy is needed and it is fine to discard the copy and return the original object.
   const copyNeeded = replacements.some(([key, value]) => obj[key] !== value);
 
-  // Only copy if something changed. Otherwise, return the original object.
-  return copyNeeded ? Object.fromEntries(replacements) : obj;
+  // Only copy if something changed. Otherwise, return the original object. Arrays are copied as arrays.
+  if (!copyNeeded) return obj;
+  const copy = Object.fromEntries(replacements);
+  return Array.isArray(obj) ? Object.assign([], copy) : copy;
 };
 
 // This function is a best effort dependency-free reimplementation of the following evaluation:
