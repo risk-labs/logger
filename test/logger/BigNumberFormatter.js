@@ -1,15 +1,14 @@
 const { assert } = require("chai");
 const { bigNumberFormatter } = require("../../dist/logger/Formatters.js");
 const { BigNumber } = require("@ethersproject/bignumber");
-const Web3 = require("web3");
-const { toBN } = Web3.utils;
+const BN = require("bn.js");
 const { cloneDeep } = require("lodash");
 
 describe("BigNumberFormatter", function () {
   it("Should replace all BigNumbers", function () {
     const sample = {
       bn1: BigNumber.from(10),
-      nested: { bn2: BigNumber.from(100), doubleNested: { bn3: toBN("1000") } },
+      nested: { bn2: BigNumber.from(100), doubleNested: { bn3: new BN("1000") } },
     };
 
     assert.deepEqual(bigNumberFormatter(sample), { bn1: "10", nested: { bn2: "100", doubleNested: { bn3: "1000" } } });
@@ -33,7 +32,7 @@ describe("BigNumberFormatter", function () {
     const sample = {
       val: null,
       nested: { val: 100, doubleNested: { val: undefined }, val2: "1000" },
-      nested2: { val: BigNumber.from(100), doubleNested: { val: undefined }, val2: toBN("1000") },
+      nested2: { val: BigNumber.from(100), doubleNested: { val: undefined }, val2: new BN("1000") },
     };
 
     const shallowCopy = sample;
