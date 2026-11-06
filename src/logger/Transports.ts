@@ -6,7 +6,6 @@
 import { createConsoleTransport } from "./ConsoleTransport";
 import { createJsonTransport } from "./JsonTransport";
 import { createSlackTransport } from "./SlackTransport";
-import { PagerDutyTransport } from "./PagerDutyTransport";
 import {
   Config as DiscordTicketConfig,
   createConfig as discordTicketCreateConfig,
@@ -28,7 +27,6 @@ const argv = minimist(process.argv.slice(), {});
 
 type SlackConfig = Parameters<typeof createSlackTransport>[0];
 type DiscordConfig = ConstructorParameters<typeof DiscordTransport>[1];
-type PagerDutyConfig = ConstructorParameters<typeof PagerDutyTransport>[1];
 
 interface TransportsConfig {
   environment?: string;
@@ -36,8 +34,6 @@ interface TransportsConfig {
   slackConfig?: SlackConfig;
   discordConfig?: DiscordConfig;
   discordTicketConfig?: DiscordTicketConfig;
-  pdApiToken?: string;
-  pagerDutyConfig?: PagerDutyConfig;
   pagerDutyV2Config?: PagerDutyV2Config;
 }
 
@@ -98,16 +94,6 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
       const discordTicketConfig =
         transportsConfig.discordTicketConfig ?? JSON.parse(process.env.DISCORD_TICKET_CONFIG || "null");
       transports.push(new DiscordTicketTransport({ level: "info" }, discordTicketCreateConfig(discordTicketConfig)));
-    }
-
-    // If there is a Pagerduty API key then add the pagerduty winston transport.
-    if (transportsConfig.pdApiToken || process.env.PAGER_DUTY_CONFIG) {
-      transports.push(
-        new PagerDutyTransport(
-          { level: "error" },
-          transportsConfig.pagerDutyConfig ?? JSON.parse(process.env.PAGER_DUTY_CONFIG || "null"),
-        ),
-      );
     }
 
     if (transportsConfig.pagerDutyV2Config || process.env.PAGER_DUTY_V2_CONFIG) {
