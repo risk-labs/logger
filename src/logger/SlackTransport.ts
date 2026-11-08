@@ -22,9 +22,8 @@
 //    In this log the liquidation and txnConfig are objects. these are spread as nested bullet points in the slack message.
 //    The amount is a string value. This is shown as a bullet point item.
 import Transport from "winston-transport";
-import axios from "axios";
-import type { AxiosInstance, AxiosRequestConfig } from "axios";
 
+import { postJson } from "../helpers/postJson";
 import { TransportError } from "./TransportError";
 
 interface MarkdownText {
@@ -157,7 +156,6 @@ interface Options extends TransportOptions {
   };
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
-  proxy?: AxiosRequestConfig["proxy"];
 }
 
 class SlackHook extends Transport {
@@ -167,7 +165,6 @@ class SlackHook extends Transport {
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
   private readonly timeoutMs: number;
-  private readonly axiosInstance: AxiosInstance;
 
   constructor(opts: Options) {
     super(opts);
@@ -178,12 +175,6 @@ class SlackHook extends Transport {
     this.formatter = opts.formatter;
     this.mrkdwn = opts.mrkdwn || false;
     this.timeoutMs = opts.transportConfig.timeoutMs ?? SLACK_POST_TIMEOUT_MS;
-    this.axiosInstance = axios.create({
-      proxy: opts.proxy,
-      validateStatus: (status) => {
-        return status == 200;
-      },
-    });
   }
 
   async log(info: any, callback: (error?: unknown) => void): Promise<void> {
@@ -197,18 +188,16 @@ class SlackHook extends Transport {
       payload.blocks = layout.blocks || undefined;
       // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
       if (JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) {
-        await this.axiosInstance.post(webhookUrl, payload, { signal: AbortSignal.timeout(this.timeoutMs) });
+        await postJson(webhookUrl, payload, this.timeoutMs);
       } else {
-        // Iterate over each message to send and generate a axios call for each message.
+        // Iterate over each message to send and generate a request for each message.
         for (const processedBlock of processMessageBlocks(payload.blocks)) {
           payload.blocks = processedBlock;
-          await this.axiosInstance.post(webhookUrl, payload, { signal: AbortSignal.timeout(this.timeoutMs) });
+          await postJson(webhookUrl, payload, this.timeoutMs);
         }
       }
     } catch (error) {
-      // The timeout is the only abort source; axios reports it as a bare "canceled".
-      const reason = axios.isCancel(error) ? new Error(`Post timed out after ${this.timeoutMs}ms`) : error;
-      return callback(new TransportError("Slack", reason, info));
+      return callback(new TransportError("Slack", error, info));
     }
     callback();
   }
