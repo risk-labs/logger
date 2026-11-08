@@ -1,9 +1,9 @@
 import Transport from "winston-transport";
-import axios from "axios";
 import { createHash, randomUUID } from "crypto";
 import * as ss from "superstruct";
 import { TransportError } from "./TransportError";
 import { delay } from "../helpers/delay";
+import { isDictionary } from "../helpers/typeGuards";
 
 const Destination = ss.object({
   url: ss.pattern(ss.string(), /^https:\/\/api\.incident\.io\/v2\/alert_events\/http\/[A-Za-z0-9_-]+$/),
@@ -101,22 +101,30 @@ export class IncidentIOTransport extends Transport {
 
   private async deliver(destination: Config["destination"], payload: { deduplication_key: string }): Promise<void> {
     for (let attempt = 1; ; attempt++) {
-      // Every HTTP status resolves, so only network errors and timeouts reject. Axios errors contain credentials
-      // and payloads, so drop them unread rather than expose them to the logger's error handlers.
-      const response = await axios
-        .post(destination.url, payload, {
-          headers: { Authorization: `Bearer ${destination.token}` },
-          timeout: 5000,
-          maxRedirects: 0,
-          validateStatus: () => true,
-        })
+      // Every HTTP status resolves, so only network errors and timeouts reject. Those errors can carry the URL, which
+      // holds credentials, so drop them unread rather than expose them to the logger's error handlers.
+      const response = await fetch(destination.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${destination.token}` },
+        body: JSON.stringify(payload),
+        redirect: "manual",
+        signal: AbortSignal.timeout(5000),
+      })
+        .then(async (res) => ({
+          status: res.status,
+          headers: res.headers,
+          data: await res.json().catch(() => undefined),
+        }))
         .catch(() => undefined);
       const status = response?.status;
       const ok = status !== undefined && status >= 200 && status < 300;
+      // Anything other than a confirmation of this event's key, including a non-JSON body, counts as unconfirmed.
+      const data = response?.data;
       if (
         ok &&
-        ["accepted", "success"].includes(response?.data?.status) &&
-        response?.data?.deduplication_key === payload.deduplication_key
+        isDictionary(data) &&
+        (data.status === "accepted" || data.status === "success") &&
+        data.deduplication_key === payload.deduplication_key
       ) {
         return;
       }
@@ -126,7 +134,7 @@ export class IncidentIOTransport extends Transport {
         const reason = ok ? "event key not confirmed" : status ? `HTTP ${status}` : "no response";
         throw new Error(`incident.io delivery failed (${reason})`);
       }
-      await delay(retryDelay(response?.headers?.["retry-after"], attempt));
+      await delay(retryDelay(response?.headers.get("retry-after") ?? undefined, attempt));
     }
   }
 }
