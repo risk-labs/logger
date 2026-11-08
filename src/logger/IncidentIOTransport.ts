@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "crypto";
 import * as ss from "superstruct";
 import { TransportError } from "./TransportError";
 import { delay } from "../helpers/delay";
+import { isDictionary } from "../helpers/typeGuards";
 
 const Destination = ss.object({
   url: ss.pattern(ss.string(), /^https:\/\/api\.incident\.io\/v2\/alert_events\/http\/[A-Za-z0-9_-]+$/),
@@ -112,16 +113,18 @@ export class IncidentIOTransport extends Transport {
         .then(async (res) => ({
           status: res.status,
           headers: res.headers,
-          // Untyped, as axios's response data was: the checks below treat any unexpected shape as unconfirmed.
-          data: (await res.json().catch(() => undefined)) as any,
+          data: await res.json().catch(() => undefined),
         }))
         .catch(() => undefined);
       const status = response?.status;
       const ok = status !== undefined && status >= 200 && status < 300;
+      // Anything other than a confirmation of this event's key, including a non-JSON body, counts as unconfirmed.
+      const data = response?.data;
       if (
         ok &&
-        ["accepted", "success"].includes(response?.data?.status) &&
-        response?.data?.deduplication_key === payload.deduplication_key
+        isDictionary(data) &&
+        (data.status === "accepted" || data.status === "success") &&
+        data.deduplication_key === payload.deduplication_key
       ) {
         return;
       }
