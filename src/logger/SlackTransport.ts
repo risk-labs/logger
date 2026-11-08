@@ -193,26 +193,27 @@ class SlackHook extends Transport {
   }
 
   log(info: any, callback: (error?: unknown) => void): void {
-    try {
-      // If the log contains a notification path then use a custom slack webhook service. This lets the transport route to
-      // different slack channels depending on the context of the log.
-      const webhookUrl = this.escalationPathWebhookUrls[info.notificationPath] ?? this.defaultWebHookUrl;
+    // If the log contains a notification path then use a custom slack webhook service. This lets the transport route to
+    // different slack channels depending on the context of the log.
+    const webhookUrl = this.escalationPathWebhookUrls[info.notificationPath] ?? this.defaultWebHookUrl;
 
-      const payload: { blocks?: Block[]; text?: string; mrkdwn?: boolean } = { mrkdwn: this.mrkdwn };
-      const layout = this.formatter(info);
-      payload.blocks = layout.blocks || undefined;
+    const payload: { blocks?: Block[]; text?: string; mrkdwn?: boolean } = { mrkdwn: this.mrkdwn };
+    let bodies: (typeof payload)[] = [];
+    // Only formatting can throw: the formatter (e.g. on a circular log) and the redaction in processMessageBlocks.
+    try {
+      payload.blocks = this.formatter(info).blocks || undefined;
       // Split a >3000-char payload into several slack messages; otherwise send it as one.
-      const bodies =
+      bodies =
         JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT
           ? [payload]
           : processMessageBlocks(payload.blocks ?? []).map((blocks) => ({ ...payload, blocks }));
-      for (const body of bodies) this.enqueue(webhookUrl, body);
     } catch (error) {
       // Don't surface errors back through winston — that makes it try to log the failure, which in
       // serverless mode emits the noisy "Attempt to write logs with no transports" warning we're killing.
       // eslint-disable-next-line no-console
-      console.warn("[SlackTransport] Failed to enqueue Slack message:", error);
+      console.warn("[SlackTransport] Failed to format Slack message:", error);
     }
+    for (const body of bodies) this.enqueue(webhookUrl, body);
     callback(); // accepted into the queue; let winston proceed without waiting for delivery
   }
 
@@ -234,27 +235,25 @@ class SlackHook extends Transport {
     if (this.draining.has(webhookUrl)) return;
     this.draining.add(webhookUrl);
     const queue = this.queues.get(webhookUrl) ?? [];
-    try {
-      while (queue.length > 0) {
-        // Enforce spacing against the previous POST, even when it happened in an earlier drain session.
-        const sinceLast = Date.now() - (this.lastSendAt.get(webhookUrl) ?? -Infinity);
-        if (sinceLast < this.minSendIntervalMs) await sleep(this.minSendIntervalMs - sinceLast);
-        const message = queue[0];
-        message.attempts += 1;
-        this.lastSendAt.set(webhookUrl, Date.now());
-        const retryMs = await this.deliver(webhookUrl, message.body);
-        if (retryMs !== null && message.attempts <= MAX_RETRIES) {
-          await sleep(retryMs); // wait Slack's Retry-After (or fallback), then retry the same message
-        } else if (queue[0] === message) {
-          // Delivered, permanently failed, or out of retries. The identity check matters: under overload,
-          // enqueue's drop-oldest may already have shifted this message out while the POST was in flight,
-          // and blindly shifting here would silently drop a message that was never attempted.
-          queue.shift();
-        }
+    while (queue.length > 0) {
+      // Enforce spacing against the previous POST, even when it happened in an earlier drain session.
+      const sinceLast = Date.now() - (this.lastSendAt.get(webhookUrl) ?? -Infinity);
+      if (sinceLast < this.minSendIntervalMs) await sleep(this.minSendIntervalMs - sinceLast);
+      const [message] = queue;
+      ++message.attempts;
+      this.lastSendAt.set(webhookUrl, Date.now());
+      const retryMs = await this.deliver(webhookUrl, message.body);
+      if (retryMs !== null && message.attempts <= MAX_RETRIES) {
+        await sleep(retryMs); // wait Slack's Retry-After (or fallback), then retry the same message
+      } else if (queue[0] === message) {
+        // Delivered, permanently failed, or out of retries. The identity check matters: under overload,
+        // enqueue's drop-oldest may already have shifted this message out while the POST was in flight,
+        // and blindly shifting here would silently drop a message that was never attempted.
+        queue.shift();
       }
-    } finally {
-      this.draining.delete(webhookUrl);
     }
+    // No try/finally needed: deliver() catches every send failure and nothing else in the loop throws.
+    this.draining.delete(webhookUrl);
   }
 
   // POSTs once. Returns ms to wait before retrying (429/5xx/network), or null when there's nothing to retry.

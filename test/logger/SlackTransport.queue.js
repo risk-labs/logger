@@ -94,4 +94,20 @@ describe("SlackTransport: rate-limited delivery", function () {
     await clock.tickAsync(60_000);
     assert.equal(post.callCount, 1, "a permanent failure is attempted once and dropped");
   });
+
+  it("drops a log that fails to format without throwing, and keeps sending later logs", async function () {
+    const t = transport();
+    const circular = {}; // malformed + circular: the formatter's own fallback JSON.stringify throws
+    circular.self = circular;
+    const callback = sinon.spy();
+    sinon.stub(console, "warn"); // keep the expected format warning out of test output
+
+    assert.doesNotThrow(() => t.log(circular, callback));
+    assert.isTrue(callback.calledOnce, "winston's callback still fires");
+    assert.equal(post.callCount, 0, "nothing is queued for an unformattable log");
+    assert.isTrue(t.isFlushed);
+
+    emit(t, 1);
+    assert.equal(post.callCount, 1, "the transport keeps working afterwards");
+  });
 });
