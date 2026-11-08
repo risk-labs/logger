@@ -15,25 +15,30 @@ export class HttpError extends Error {
   }
 }
 
-export interface PostJsonOptions {
-  // Aborts the request when the server has not responded within this many milliseconds.
-  timeoutMs?: number;
-}
+// POSTs body as JSON. Resolves on any 2xx, throws HttpError otherwise, and throws if the request (body included) takes
+// longer than timeoutMs: an unanswered post would otherwise stall every transport fed by the same logger. Other fetch
+// failures (DNS failure, connection reset) propagate untouched.
+export async function postJson(url: string, body: unknown, timeoutMs: number): Promise<void> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
 
-// POSTs body as JSON. Resolves on any 2xx, throws HttpError otherwise, and propagates whatever fetch throws (DNS
-// failure, connection reset, timeout abort) untouched.
-export async function postJson(url: string, body: unknown, { timeoutMs }: PostJsonOptions = {}): Promise<void> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
-  });
+    // Always drain the body, even when it is not needed: an unread body holds the connection open.
+    const text = await response.text().catch((error) => {
+      if (signal.aborted) throw error;
+      return "";
+    });
 
-  // Always drain the body, even when it is not needed: an unread body holds the connection open.
-  const text = await response.text().catch(() => "");
-
-  if (!response.ok) throw new HttpError(response.status, response.headers, parseJson(text));
+    if (!response.ok) throw new HttpError(response.status, response.headers, parseJson(text));
+  } catch (error) {
+    if (signal.aborted) throw new Error(`Post timed out after ${timeoutMs}ms`);
+    throw error;
+  }
 }
 
 // Webhook errors are usually JSON but are not guaranteed to be (proxies and gateways return HTML), so fall back to the

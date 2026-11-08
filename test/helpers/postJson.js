@@ -4,6 +4,7 @@ const sinon = require("sinon");
 const { HttpError, postJson } = require("../../dist/helpers/postJson");
 
 const URL = "https://hooks.example.test/webhook";
+const TIMEOUT_MS = 1000;
 
 describe("postJson", function () {
   let fetchStub;
@@ -19,7 +20,7 @@ describe("postJson", function () {
   it("POSTs the body as JSON", async function () {
     fetchStub.resolves(new Response("ok", { status: 200 }));
 
-    await postJson(URL, { blocks: [{ type: "divider" }] });
+    await postJson(URL, { blocks: [{ type: "divider" }] }, TIMEOUT_MS);
 
     const [url, init] = fetchStub.firstCall.args;
     assert.equal(url, URL);
@@ -32,7 +33,7 @@ describe("postJson", function () {
     // Slack answers 200 with a body of "ok", Discord answers 204 with no body at all.
     for (const status of [200, 204]) {
       fetchStub.resolves(new Response(status === 204 ? null : "ok", { status }));
-      await postJson(URL, {});
+      await postJson(URL, {}, TIMEOUT_MS);
     }
   });
 
@@ -44,7 +45,7 @@ describe("postJson", function () {
       }),
     );
 
-    const error = await postJson(URL, {}).catch((error) => error);
+    const error = await postJson(URL, {}, TIMEOUT_MS).catch((error) => error);
 
     assert.instanceOf(error, HttpError);
     assert.equal(error.status, 429);
@@ -56,37 +57,28 @@ describe("postJson", function () {
   it("Keeps a non-JSON error body as text", async function () {
     fetchStub.resolves(new Response("<html>502 Bad Gateway</html>", { status: 502 }));
 
-    const error = await postJson(URL, {}).catch((error) => error);
+    const error = await postJson(URL, {}, TIMEOUT_MS).catch((error) => error);
 
     assert.instanceOf(error, HttpError);
     assert.equal(error.data, "<html>502 Bad Gateway</html>");
   });
 
-  it("Aborts the request once timeoutMs elapses", async function () {
-    // Stand in for a webhook that accepts the connection and never answers.
+  it("Times out an unanswered post", async function () {
     fetchStub.callsFake(
-      (url, init) =>
-        new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
+      (_url, init) =>
+        new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
     );
 
-    const error = await postJson(URL, {}, { timeoutMs: 20 }).catch((error) => error);
+    const error = await postJson(URL, {}, 20).catch((error) => error);
 
-    assert.equal(error.name, "TimeoutError");
-  });
-
-  it("Sends no abort signal when no timeout is configured", async function () {
-    fetchStub.resolves(new Response("ok", { status: 200 }));
-
-    await postJson(URL, {});
-
-    assert.isUndefined(fetchStub.firstCall.args[1].signal);
+    assert.equal(error.message, "Post timed out after 20ms");
   });
 
   it("Propagates network failures untouched", async function () {
     const networkError = new TypeError("fetch failed");
     fetchStub.rejects(networkError);
 
-    const error = await postJson(URL, {}).catch((error) => error);
+    const error = await postJson(URL, {}, TIMEOUT_MS).catch((error) => error);
 
     assert.equal(error, networkError);
   });

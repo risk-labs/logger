@@ -47,13 +47,14 @@ export function botIdentifyFormatter(botIdentifier: string, runIdentifier: strin
   };
 }
 
-// Traverse a potentially nested object and replace any element that is either a Ethers BigNumber or web3 BigNumber
-// with the string version of it for easy logging.
+// Traverse a potentially nested object and replace any element that is a native bigint, an Ethers BigNumber or a
+// bn.js BN with the string version of it for easy logging.
 const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // This does a DFS, recursively calling this function to find the desired value for each key.
   // It doesn't modify the original object. Instead, it creates an array of keys and updated values.
   const replacements = Object.entries(obj).map(([key, value]): [string, any] => {
-    if (stringifiableBigNumberLike(value)) {
+    // Native bigints are primitives, so stringifiableBigNumberLike misses them; JSON.stringify throws on them.
+    if (typeof value === "bigint" || stringifiableBigNumberLike(value)) {
       return [key, value.toString()];
     } else if (typeof value === "object") {
       if (typeof value?.toJSON === "function") {
@@ -72,12 +73,14 @@ const iterativelyReplaceBigNumbers = (obj: Record<string | symbol, any>) => {
   // If no changes were detected, no copy is needed and it is fine to discard the copy and return the original object.
   const copyNeeded = replacements.some(([key, value]) => obj[key] !== value);
 
-  // Only copy if something changed. Otherwise, return the original object.
-  return copyNeeded ? Object.fromEntries(replacements) : obj;
+  // Only copy if something changed. Otherwise, return the original object. Arrays are copied as arrays.
+  if (!copyNeeded) return obj;
+  const copy = Object.fromEntries(replacements);
+  return Array.isArray(obj) ? Object.assign([], copy) : copy;
 };
 
 // This function is a best effort dependency-free reimplementation of the following evaluation:
-// (BigNumber.isBigNumber(value) || web3.utils.isBN(value))
+// (BigNumber.isBigNumber(value) || BN.isBN(value))
 // `BigNumber` in the line above is from ethers before v6
 function stringifiableBigNumberLike(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
@@ -96,7 +99,7 @@ function stringifiableBigNumberLike(value: unknown): boolean {
   return false;
 }
 
-// Mimit isBN function from bn.js that web3.js is using under the hood
+// Mimic the isBN function from bn.js
 // https://github.com/indutny/bn.js/blob/6db7c3818569423b94ebcf2bdff90fcfb9c47f6d/lib/bn.js#L61
 function isBnJsLike(candidate: Record<string, any>): boolean {
   const ctor = candidate && candidate.constructor;
