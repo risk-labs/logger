@@ -164,7 +164,7 @@ interface Options extends TransportOptions {
 export const DEFAULT_MIN_SEND_INTERVAL_MS = 1100;
 const MAX_RETRIES = 5; // attempts for a single message before it is dropped
 const MAX_QUEUE_SIZE = 1000; // messages buffered per webhook before the oldest are dropped (bounds memory)
-const RETRY_FALLBACK_MS = 1000; // retry wait when Slack sent no Retry-After (5xx / network error)
+const RETRY_BASE_MS = 1000; // first retry wait when Slack sent no Retry-After; doubles per attempt (1s … 16s)
 
 class SlackHook extends Transport {
   private name: string;
@@ -242,9 +242,9 @@ class SlackHook extends Transport {
       const [message] = queue;
       ++message.attempts;
       this.lastSendAt.set(webhookUrl, Date.now());
-      const retryMs = await this.deliver(webhookUrl, message.body);
+      const retryMs = await this.deliver(webhookUrl, message.body, RETRY_BASE_MS * 2 ** (message.attempts - 1));
       if (retryMs !== null && message.attempts <= MAX_RETRIES) {
-        await sleep(retryMs); // wait Slack's Retry-After (or fallback), then retry the same message
+        await sleep(retryMs); // wait Slack's Retry-After (or the backoff), then retry the same message
       } else if (queue[0] === message) {
         // Delivered, permanently failed, or out of retries. The identity check matters: under overload,
         // enqueue's drop-oldest may already have shifted this message out while the POST was in flight,
@@ -256,15 +256,16 @@ class SlackHook extends Transport {
     this.draining.delete(webhookUrl);
   }
 
-  // POSTs once. Returns ms to wait before retrying (429/5xx/network), or null when there's nothing to retry.
-  private async deliver(webhookUrl: string, body: unknown): Promise<number | null> {
+  // POSTs once. Returns ms to wait before retrying (429/5xx/network): Slack's Retry-After when it sent one, otherwise
+  // backoffMs. Returns null when there's nothing to retry.
+  private async deliver(webhookUrl: string, body: unknown, backoffMs: number): Promise<number | null> {
     try {
       await postJson(webhookUrl, body, this.timeoutMs);
       return null; // delivered
     } catch (error) {
-      if (!(error instanceof HttpError)) return RETRY_FALLBACK_MS; // network error or timeout — retry
-      if (error.status === 429) return parseRetryAfterMs(error.headers.get("retry-after")) ?? RETRY_FALLBACK_MS;
-      if (error.status >= 500) return RETRY_FALLBACK_MS;
+      if (!(error instanceof HttpError)) return backoffMs; // network error or timeout — retry
+      if (error.status === 429) return parseRetryAfterMs(error.headers.get("retry-after")) ?? backoffMs;
+      if (error.status >= 500) return backoffMs;
       return null; // permanent 4xx (bad payload / disabled webhook) — don't retry
     }
   }

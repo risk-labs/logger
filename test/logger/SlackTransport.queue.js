@@ -79,6 +79,24 @@ describe("SlackTransport: rate-limited delivery", function () {
     assert.equal(post.callCount, 2, "retries once Retry-After has elapsed");
   });
 
+  for (const [name, response] of [
+    ["5xx", () => respond(500)],
+    ["429 without Retry-After", () => respond(429)],
+  ]) {
+    it(`backs off exponentially between retries on ${name}`, async function () {
+      post.callsFake(async () => response());
+      emit(transport(), 1);
+      assert.equal(post.callCount, 1);
+
+      for (const [i, waitMs] of [1000, 2000, 4000, 8000, 16000].entries()) {
+        await clock.tickAsync(waitMs - 1);
+        assert.equal(post.callCount, i + 1, `retry ${i + 1} must wait the full ${waitMs}ms`);
+        await clock.tickAsync(1);
+        assert.equal(post.callCount, i + 2, `retry ${i + 1} fires after ${waitMs}ms`);
+      }
+    });
+  }
+
   it("drops a message after MAX_RETRIES of 5xx and stops retrying", async function () {
     post.callsFake(async () => respond(500));
     emit(transport(), 1);
