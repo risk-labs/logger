@@ -213,7 +213,7 @@ class SlackHook extends Transport {
       // eslint-disable-next-line no-console
       console.warn("[SlackTransport] Failed to format Slack message:", error);
     }
-    for (const body of bodies) this.enqueue(webhookUrl, body);
+    bodies.forEach((body) => this.enqueue(webhookUrl, body));
     callback(); // accepted into the queue; let winston proceed without waiting for delivery
   }
 
