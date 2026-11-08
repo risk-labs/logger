@@ -20,25 +20,30 @@ export class HttpError extends Error {
 // failures (DNS failure, connection reset) propagate untouched.
 export async function postJson(url: string, body: unknown, timeoutMs: number): Promise<void> {
   const signal = AbortSignal.timeout(timeoutMs);
+  const timeoutError = () => new Error(`Post timed out after ${timeoutMs}ms`);
+
+  let response: Response;
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal,
     });
-
-    // Always drain the body, even when it is not needed: an unread body holds the connection open.
-    const text = await response.text().catch((error) => {
-      if (signal.aborted) throw error;
-      return "";
-    });
-
-    if (!response.ok) throw new HttpError(response.status, response.headers, parseJson(text));
   } catch (error) {
-    if (signal.aborted) throw new Error(`Post timed out after ${timeoutMs}ms`);
-    throw error;
+    throw signal.aborted ? timeoutError() : error;
   }
+
+  // Always drain the body, even when it is not needed: an unread body holds the connection open. Only a timeout is fatal
+  // here; any other read failure just loses the error detail.
+  let text = "";
+  try {
+    text = await response.text();
+  } catch {
+    if (signal.aborted) throw timeoutError();
+  }
+
+  if (!response.ok) throw new HttpError(response.status, response.headers, parseJson(text));
 }
 
 // Webhook errors are usually JSON but are not guaranteed to be (proxies and gateways return HTML), so fall back to the
