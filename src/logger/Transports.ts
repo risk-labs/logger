@@ -16,6 +16,11 @@ import {
   Config as PagerDutyV2Config,
   createConfig as pagerDutyV2CreateConfig,
 } from "./PagerDutyV2Transport";
+import {
+  IncidentIOTransport,
+  Config as IncidentIOConfig,
+  createConfig as incidentIOCreateConfig,
+} from "./IncidentIOTransport";
 import { DiscordTransport } from "./DiscordTransport";
 import type Transport from "winston-transport";
 import dotenv from "dotenv";
@@ -35,6 +40,7 @@ interface TransportsConfig {
   discordConfig?: DiscordConfig;
   discordTicketConfig?: DiscordTicketConfig;
   pagerDutyV2Config?: PagerDutyV2Config;
+  incidentIOConfig?: IncidentIOConfig;
 }
 
 export function createTransports(transportsConfig: TransportsConfig = {}): Transport[] {
@@ -45,7 +51,6 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
   if ((transportsConfig.environment ?? process.env.ENVIRONMENT) == "serverless") {
     const { LoggingWinston } = require("@google-cloud/logging-winston");
     transports.push(new LoggingWinston());
-    if (!require("@google-cloud/trace-agent").get().enabled) require("@google-cloud/trace-agent").start();
     transports.push(createJsonTransport());
   }
 
@@ -53,15 +58,12 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
   else if ((transportsConfig.environment ?? process.env.ENVIRONMENT) == "production") {
     const { LoggingWinston } = require("@google-cloud/logging-winston");
     transports.push(new LoggingWinston());
-    if (!require("@google-cloud/trace-agent").get().enabled) require("@google-cloud/trace-agent").start();
   }
 
   // If the logger is running in serverless-gcp mode, emit GCP-structured JSON log entries to stdout for ingestion by
   // the Cloud Logging Agent rather than calling the Cloud Logging API directly. This avoids the gax 60s API timeout
   // failure mode while preserving severity mapping and resource detection. Suitable for Cloud Run / Cloud Functions /
-  // GKE workloads where the runtime already tails container stdout. trace-agent is intentionally not started here:
-  // its purpose is to instrument outbound HTTP/gRPC into Cloud Trace, which (a) is unrelated to the stdout log path
-  // and (b) re-introduces the same gRPC failure class this mode exists to avoid.
+  // GKE workloads where the runtime already tails container stdout.
   // https://github.com/googleapis/nodejs-logging-winston#alternative-way-to-ingest-logs-in-google-cloud-managed-environments
   else if ((transportsConfig.environment ?? process.env.ENVIRONMENT) == "serverless-gcp") {
     const { LoggingWinston } = require("@google-cloud/logging-winston");
@@ -94,6 +96,12 @@ export function createTransports(transportsConfig: TransportsConfig = {}): Trans
       const discordTicketConfig =
         transportsConfig.discordTicketConfig ?? JSON.parse(process.env.DISCORD_TICKET_CONFIG || "null");
       transports.push(new DiscordTicketTransport({ level: "info" }, discordTicketCreateConfig(discordTicketConfig)));
+    }
+
+    if (transportsConfig.incidentIOConfig || process.env.INCIDENT_IO_CONFIG) {
+      const { disabled = false, ...config } =
+        transportsConfig.incidentIOConfig ?? JSON.parse(process.env.INCIDENT_IO_CONFIG || "null");
+      if (!disabled) transports.push(new IncidentIOTransport({ level: "error" }, incidentIOCreateConfig(config)));
     }
 
     if (transportsConfig.pagerDutyV2Config || process.env.PAGER_DUTY_V2_CONFIG) {

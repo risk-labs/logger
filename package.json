@@ -8,7 +8,6 @@
   "dependencies": {
     "@discordjs/rest": "^2.6.1",
     "@google-cloud/logging-winston": "^7.3.0",
-    "@google-cloud/trace-agent": "^8.0.0",
     "@pagerduty/pdjs": "^2.2.4",
     "axios": "^1.12.2",
     "discord-api-types": "^0.38.43",
@@ -24,13 +23,13 @@
     "@tsconfig/node22": "^22.0.5",
     "@types/minimist": "^1.2.5",
     "@types/sinon": "^10.0.0",
+    "bn.js": "^5.2.2",
     "chai": "^4.3.4",
     "lodash": "^4.17.20",
     "mocha": "^9.1.1",
     "prettier": "^3.6.2",
     "sinon": "^9.0.2",
-    "typescript": "^5.9.2",
-    "web3": "^1.6.0"
+    "typescript": "^5.9.2"
   },
   "homepage": "https://risklabs.foundation",
   "license": "AGPL-3.0-or-later",
