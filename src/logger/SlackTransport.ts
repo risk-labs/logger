@@ -151,17 +151,12 @@ interface Options extends TransportOptions {
   transportConfig: {
     escalationPathWebhookUrls?: { [key: string]: string };
     defaultWebHookUrl: string;
-    // Minimum spacing between two POSTs to the same webhook — the "emit at a specific rate" lever.
-    // Optional; defaults to DEFAULT_MIN_SEND_INTERVAL_MS (~1 msg/sec, just under Slack's webhook limit).
-    minSendIntervalMs?: number;
     timeoutMs?: number;
   };
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
 }
 
-// Slack incoming webhooks allow ~1 request/second/webhook, so the default spacing stays just under that.
-export const DEFAULT_MIN_SEND_INTERVAL_MS = 1100;
 const MAX_RETRIES = 5; // attempts for a single message before it is dropped
 const MAX_QUEUE_SIZE = 1000; // messages buffered per webhook before the oldest are dropped (bounds memory)
 const RETRY_BASE_MS = 1000; // first retry wait when Slack sent no Retry-After; doubles per attempt (1s … 16s)
@@ -173,12 +168,9 @@ class SlackHook extends Transport {
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
   private readonly timeoutMs: number;
-  private readonly minSendIntervalMs: number;
   // One FIFO queue and at most one in-flight drain per webhook URL (Slack's rate limit is per-webhook).
   private readonly queues = new Map<string, { body: unknown; attempts: number }[]>();
   private readonly draining = new Set<string>();
-  // Timestamp of the last POST per webhook, so spacing holds even across separate drain sessions.
-  private readonly lastSendAt = new Map<string, number>();
 
   constructor(opts: Options) {
     super(opts);
@@ -188,7 +180,6 @@ class SlackHook extends Transport {
     this.defaultWebHookUrl = opts.transportConfig.defaultWebHookUrl;
     this.formatter = opts.formatter;
     this.mrkdwn = opts.mrkdwn || false;
-    this.minSendIntervalMs = opts.transportConfig.minSendIntervalMs ?? DEFAULT_MIN_SEND_INTERVAL_MS;
     this.timeoutMs = opts.transportConfig.timeoutMs ?? SLACK_POST_TIMEOUT_MS;
   }
 
@@ -230,18 +221,15 @@ class SlackHook extends Transport {
     return Array.from(this.queues.values()).every((queue) => queue.length === 0);
   }
 
-  // Drains a webhook's queue one message at a time, spaced by minSendIntervalMs, retrying 429s and 5xx.
+  // Drains a webhook's queue one message at a time, retrying 429s and 5xx. Sends are not spaced: Slack allows short
+  // bursts above its 1/s webhook limit, so the queue only pauses when Slack answers 429.
   private async drain(webhookUrl: string): Promise<void> {
     if (this.draining.has(webhookUrl)) return;
     this.draining.add(webhookUrl);
     const queue = this.queues.get(webhookUrl) ?? [];
     while (queue.length > 0) {
-      // Enforce spacing against the previous POST, even when it happened in an earlier drain session.
-      const sinceLast = Date.now() - (this.lastSendAt.get(webhookUrl) ?? -Infinity);
-      if (sinceLast < this.minSendIntervalMs) await sleep(this.minSendIntervalMs - sinceLast);
       const [message] = queue;
       ++message.attempts;
-      this.lastSendAt.set(webhookUrl, Date.now());
       const retryMs = await this.deliver(webhookUrl, message.body, RETRY_BASE_MS * 2 ** (message.attempts - 1));
       if (retryMs !== null && message.attempts <= MAX_RETRIES) {
         await sleep(retryMs); // wait Slack's Retry-After (or the backoff), then retry the same message

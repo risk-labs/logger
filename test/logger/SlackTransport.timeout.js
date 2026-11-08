@@ -19,7 +19,6 @@ describe("SlackTransport: post timeout", async function () {
     return createSlackTransport({
       defaultWebHookUrl: `http://127.0.0.1:${server.address().port}`,
       timeoutMs: 100,
-      minSendIntervalMs: 0,
     });
   }
 

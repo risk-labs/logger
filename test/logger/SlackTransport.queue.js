@@ -19,8 +19,10 @@ describe("SlackTransport: rate-limited delivery", function () {
   });
 
   const transport = (overrides) =>
-    createSlackTransport({ defaultWebHookUrl: "https://hooks.slack.com/x", minSendIntervalMs: 1000, ...overrides });
-  const emit = (t, n) => t.log({ level: "warn", at: "Test", message: "m" + n }, () => {});
+    createSlackTransport({ defaultWebHookUrl: "https://hooks.slack.com/x", ...overrides });
+  const emit = (t, n, notificationPath) =>
+    t.log({ level: "warn", at: "Test", message: "m" + n, notificationPath }, () => {});
+  const callsTo = (url) => post.getCalls().filter((call) => call.args[0] === url).length;
 
   it("parseRetryAfterMs parses integer seconds and rejects junk", function () {
     assert.equal(parseRetryAfterMs("3"), 3000);
@@ -29,32 +31,30 @@ describe("SlackTransport: rate-limited delivery", function () {
     assert.equal(parseRetryAfterMs("-1"), null);
   });
 
-  it("sends the first message immediately and spaces the rest by minSendIntervalMs", async function () {
+  it("sends queued messages back-to-back, one at a time", async function () {
     const t = transport();
     emit(t, 1);
     emit(t, 2);
     emit(t, 3);
 
-    assert.equal(post.callCount, 1); // first send fires immediately
+    assert.equal(post.callCount, 1, "one post in flight per webhook");
     await clock.tickAsync(0);
-    assert.equal(post.callCount, 1, "no second send before the interval elapses");
-    await clock.tickAsync(1000);
-    assert.equal(post.callCount, 2);
-    await clock.tickAsync(1000);
-    assert.equal(post.callCount, 3);
+    assert.equal(post.callCount, 3, "the rest follow without waiting");
   });
 
-  it("enforces spacing across drain sessions (an emptied queue does not reset the rate limit)", async function () {
-    const t = transport();
+  it("pauses only the webhook that got a 429", async function () {
+    const alerts = "https://hooks.slack.com/alerts";
+    post.onCall(0).callsFake(async () => respond(429, { "retry-after": "2" }));
+    const t = transport({ escalationPathWebhookUrls: { alerts } });
     emit(t, 1);
-    assert.equal(post.callCount, 1);
-    await clock.tickAsync(400); // queue fully drained; next message arrives shortly after
     emit(t, 2);
-    assert.equal(post.callCount, 1, "second send must wait out the remainder of the interval");
-    await clock.tickAsync(599);
-    assert.equal(post.callCount, 1);
-    await clock.tickAsync(1);
-    assert.equal(post.callCount, 2, "second send fires one interval after the first");
+    emit(t, 3, "alerts");
+
+    await clock.tickAsync(0);
+    assert.equal(callsTo("https://hooks.slack.com/x"), 1, "the default webhook waits out Retry-After");
+    assert.equal(callsTo(alerts), 1, "the other webhook is unaffected");
+    await clock.tickAsync(2000);
+    assert.equal(callsTo("https://hooks.slack.com/x"), 3, "the default webhook resumes back-to-back");
   });
 
   it("reports isFlushed only once every queue has drained (waitForLogger relies on this)", async function () {
@@ -63,7 +63,7 @@ describe("SlackTransport: rate-limited delivery", function () {
     emit(t, 1);
     emit(t, 2);
     assert.isFalse(t.isFlushed, "not flushed while messages are queued or in flight");
-    await clock.tickAsync(1000); // first sends immediately, second one interval later
+    await clock.tickAsync(0);
     assert.equal(post.callCount, 2);
     assert.isTrue(t.isFlushed, "flushed after the queue drains");
   });
