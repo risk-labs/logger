@@ -48,6 +48,8 @@ interface SlackFormatterResponse {
 }
 
 export const SLACK_MAX_CHAR_LIMIT = 3000;
+// An unanswered post would otherwise hold up every later message queued for the same webhook.
+const SLACK_POST_TIMEOUT_MS = 10_000;
 
 // Note: info is any because it comes directly from winston.
 function slackFormatter(info: any): SlackFormatterResponse {
@@ -152,6 +154,7 @@ interface Options extends TransportOptions {
     // Minimum spacing between two POSTs to the same webhook — the "emit at a specific rate" lever.
     // Optional; defaults to DEFAULT_MIN_SEND_INTERVAL_MS (~1 msg/sec, just under Slack's webhook limit).
     minSendIntervalMs?: number;
+    timeoutMs?: number;
   };
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
@@ -170,6 +173,7 @@ class SlackHook extends Transport {
   private readonly defaultWebHookUrl: string;
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
+  private readonly timeoutMs: number;
   private readonly axiosInstance: AxiosInstance;
   private readonly minSendIntervalMs: number;
   // One FIFO queue and at most one in-flight drain per webhook URL (Slack's rate limit is per-webhook).
@@ -187,6 +191,7 @@ class SlackHook extends Transport {
     this.formatter = opts.formatter;
     this.mrkdwn = opts.mrkdwn || false;
     this.minSendIntervalMs = opts.transportConfig.minSendIntervalMs ?? DEFAULT_MIN_SEND_INTERVAL_MS;
+    this.timeoutMs = opts.transportConfig.timeoutMs ?? SLACK_POST_TIMEOUT_MS;
     // Accept every status so we can read 429s (and their Retry-After) instead of letting axios throw.
     this.axiosInstance = axios.create({ proxy: opts.proxy, validateStatus: () => true });
   }
@@ -259,13 +264,15 @@ class SlackHook extends Transport {
   // POSTs once. Returns ms to wait before retrying (429/5xx/network), or null when there's nothing to retry.
   private async deliver(webhookUrl: string, body: unknown): Promise<number | null> {
     try {
-      const { status, headers } = await this.axiosInstance.post(webhookUrl, body);
+      const { status, headers } = await this.axiosInstance.post(webhookUrl, body, {
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
       if (status === 200) return null; // delivered
       if (status === 429) return parseRetryAfterMs(headers?.["retry-after"]) ?? RETRY_FALLBACK_MS;
       if (status >= 500) return RETRY_FALLBACK_MS;
       return null; // permanent 4xx (bad payload / disabled webhook) — don't retry
     } catch {
-      return RETRY_FALLBACK_MS; // network error — retry
+      return RETRY_FALLBACK_MS; // network error or timeout — retry
     }
   }
 }
