@@ -81,7 +81,7 @@ export class DiscordTransport extends Transport {
     this.logQueue = new AsyncLogQueue<QueueElement>({
       maxQueueSize: this.maxQueueSize,
       deliver: async ({ webHook, body }) => {
-        await postJson(webHook, body, { timeoutMs: DISCORD_REQUEST_TIMEOUT_MS });
+        await postJson(webHook, body, DISCORD_REQUEST_TIMEOUT_MS);
       },
       onError: (error, { info }) => {
         // The winston callback has long since fired, so surface this on the transport instead. winston forwards it to
