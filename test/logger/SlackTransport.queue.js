@@ -1,15 +1,16 @@
 const { assert } = require("chai");
 const sinon = require("sinon");
-const axios = require("axios");
 const { createSlackTransport, parseRetryAfterMs } = require("../../dist/logger/SlackTransport");
+
+// A fresh Response per call: fetch bodies can only be read once.
+const respond = (status, headers) => new Response(null, { status, headers });
 
 describe("SlackTransport: rate-limited delivery", function () {
   let clock, post;
 
   beforeEach(function () {
     clock = sinon.useFakeTimers();
-    post = sinon.stub().resolves({ status: 200, headers: {} });
-    sinon.stub(axios, "create").returns({ post });
+    post = sinon.stub(globalThis, "fetch").callsFake(async () => respond(200));
   });
 
   afterEach(function () {
@@ -17,14 +18,12 @@ describe("SlackTransport: rate-limited delivery", function () {
     clock.restore();
   });
 
-  // createSlackTransport calls axios.create(), so the stub above is what the transport POSTs through.
   const transport = (overrides) =>
     createSlackTransport({ defaultWebHookUrl: "https://hooks.slack.com/x", minSendIntervalMs: 1000, ...overrides });
   const emit = (t, n) => t.log({ level: "warn", at: "Test", message: "m" + n }, () => {});
 
   it("parseRetryAfterMs parses integer seconds and rejects junk", function () {
     assert.equal(parseRetryAfterMs("3"), 3000);
-    assert.equal(parseRetryAfterMs(["5"]), 5000); // header may arrive as an array
     assert.equal(parseRetryAfterMs(undefined), null);
     assert.equal(parseRetryAfterMs("nope"), null);
     assert.equal(parseRetryAfterMs("-1"), null);
@@ -70,8 +69,7 @@ describe("SlackTransport: rate-limited delivery", function () {
   });
 
   it("waits the Retry-After duration on a 429 and then redelivers", async function () {
-    post.onCall(0).resolves({ status: 429, headers: { "retry-after": "2" } });
-    post.onCall(1).resolves({ status: 200, headers: {} });
+    post.onCall(0).callsFake(async () => respond(429, { "retry-after": "2" }));
 
     emit(transport(), 1);
     assert.equal(post.callCount, 1);
@@ -82,7 +80,7 @@ describe("SlackTransport: rate-limited delivery", function () {
   });
 
   it("drops a message after MAX_RETRIES of 5xx and stops retrying", async function () {
-    post.resolves({ status: 500, headers: {} });
+    post.callsFake(async () => respond(500));
     emit(transport(), 1);
 
     await clock.tickAsync(60_000); // far past all retry waits
@@ -90,7 +88,7 @@ describe("SlackTransport: rate-limited delivery", function () {
   });
 
   it("does not retry permanent 4xx failures", async function () {
-    post.resolves({ status: 400, headers: {} });
+    post.callsFake(async () => respond(400));
     emit(transport(), 1);
 
     await clock.tickAsync(60_000);

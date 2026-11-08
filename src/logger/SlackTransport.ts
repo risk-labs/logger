@@ -22,8 +22,8 @@
 //    In this log the liquidation and txnConfig are objects. these are spread as nested bullet points in the slack message.
 //    The amount is a string value. This is shown as a bullet point item.
 import Transport from "winston-transport";
-import axios from "axios";
-import type { AxiosInstance, AxiosRequestConfig } from "axios";
+
+import { HttpError, postJson } from "../helpers/postJson";
 
 interface MarkdownText {
   type: "mrkdwn";
@@ -158,7 +158,6 @@ interface Options extends TransportOptions {
   };
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
-  proxy?: AxiosRequestConfig["proxy"];
 }
 
 // Slack incoming webhooks allow ~1 request/second/webhook, so the default spacing stays just under that.
@@ -174,7 +173,6 @@ class SlackHook extends Transport {
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
   private readonly timeoutMs: number;
-  private readonly axiosInstance: AxiosInstance;
   private readonly minSendIntervalMs: number;
   // One FIFO queue and at most one in-flight drain per webhook URL (Slack's rate limit is per-webhook).
   private readonly queues = new Map<string, { body: unknown; attempts: number }[]>();
@@ -192,8 +190,6 @@ class SlackHook extends Transport {
     this.mrkdwn = opts.mrkdwn || false;
     this.minSendIntervalMs = opts.transportConfig.minSendIntervalMs ?? DEFAULT_MIN_SEND_INTERVAL_MS;
     this.timeoutMs = opts.transportConfig.timeoutMs ?? SLACK_POST_TIMEOUT_MS;
-    // Accept every status so we can read 429s (and their Retry-After) instead of letting axios throw.
-    this.axiosInstance = axios.create({ proxy: opts.proxy, validateStatus: () => true });
   }
 
   log(info: any, callback: (error?: unknown) => void): void {
@@ -264,23 +260,21 @@ class SlackHook extends Transport {
   // POSTs once. Returns ms to wait before retrying (429/5xx/network), or null when there's nothing to retry.
   private async deliver(webhookUrl: string, body: unknown): Promise<number | null> {
     try {
-      const { status, headers } = await this.axiosInstance.post(webhookUrl, body, {
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-      if (status === 200) return null; // delivered
-      if (status === 429) return parseRetryAfterMs(headers?.["retry-after"]) ?? RETRY_FALLBACK_MS;
-      if (status >= 500) return RETRY_FALLBACK_MS;
+      await postJson(webhookUrl, body, this.timeoutMs);
+      return null; // delivered
+    } catch (error) {
+      if (!(error instanceof HttpError)) return RETRY_FALLBACK_MS; // network error or timeout — retry
+      if (error.status === 429) return parseRetryAfterMs(error.headers.get("retry-after")) ?? RETRY_FALLBACK_MS;
+      if (error.status >= 500) return RETRY_FALLBACK_MS;
       return null; // permanent 4xx (bad payload / disabled webhook) — don't retry
-    } catch {
-      return RETRY_FALLBACK_MS; // network error or timeout — retry
     }
   }
 }
 
 // Parse a Slack Retry-After header (integer seconds) into milliseconds; null when absent/unparseable.
-export function parseRetryAfterMs(headerValue: unknown): number | null {
+export function parseRetryAfterMs(headerValue: string | null | undefined): number | null {
   if (headerValue == null) return null;
-  const seconds = Number(Array.isArray(headerValue) ? headerValue[0] : headerValue);
+  const seconds = Number(headerValue);
   return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000) : null;
 }
 
