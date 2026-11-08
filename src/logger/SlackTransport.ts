@@ -23,8 +23,7 @@
 //    The amount is a string value. This is shown as a bullet point item.
 import Transport from "winston-transport";
 
-import { postJson } from "../helpers/postJson";
-import { TransportError } from "./TransportError";
+import { HttpError, postJson } from "../helpers/postJson";
 
 interface MarkdownText {
   type: "mrkdwn";
@@ -49,7 +48,7 @@ interface SlackFormatterResponse {
 }
 
 export const SLACK_MAX_CHAR_LIMIT = 3000;
-// An unanswered post would otherwise stall every transport fed by the same logger.
+// An unanswered post would otherwise hold up every later message queued for the same webhook.
 const SLACK_POST_TIMEOUT_MS = 10_000;
 
 // Note: info is any because it comes directly from winston.
@@ -158,6 +157,10 @@ interface Options extends TransportOptions {
   mrkdwn?: boolean;
 }
 
+const MAX_RETRIES = 5; // attempts for a single message before it is dropped
+const MAX_QUEUE_SIZE = 1000; // messages buffered per webhook before the oldest are dropped (bounds memory)
+const RETRY_BASE_MS = 1000; // first retry wait when Slack sent no Retry-After; doubles per attempt (1s … 16s)
+
 class SlackHook extends Transport {
   private name: string;
   private readonly escalationPathWebhookUrls: { [key: string]: string };
@@ -165,6 +168,9 @@ class SlackHook extends Transport {
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
   private readonly timeoutMs: number;
+  // One FIFO queue and at most one in-flight drain per webhook URL (Slack's rate limit is per-webhook).
+  private readonly queues = new Map<string, { body: unknown; attempts: number }[]>();
+  private readonly draining = new Set<string>();
 
   constructor(opts: Options) {
     super(opts);
@@ -177,30 +183,91 @@ class SlackHook extends Transport {
     this.timeoutMs = opts.transportConfig.timeoutMs ?? SLACK_POST_TIMEOUT_MS;
   }
 
-  async log(info: any, callback: (error?: unknown) => void): Promise<void> {
-    try {
-      // If the log contains a notification path then use a custom slack webhook service. This lets the transport route to
-      // different slack channels depending on the context of the log.
-      const webhookUrl = this.escalationPathWebhookUrls[info.notificationPath] ?? this.defaultWebHookUrl;
+  log(info: any, callback: (error?: unknown) => void): void {
+    // If the log contains a notification path then use a custom slack webhook service. This lets the transport route to
+    // different slack channels depending on the context of the log.
+    const webhookUrl = this.escalationPathWebhookUrls[info.notificationPath] ?? this.defaultWebHookUrl;
 
-      const payload: { blocks?: Block[]; text?: string; mrkdwn?: boolean } = { mrkdwn: this.mrkdwn };
-      const layout = this.formatter(info);
-      payload.blocks = layout.blocks || undefined;
-      // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
-      if (JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) {
-        await postJson(webhookUrl, payload, this.timeoutMs);
-      } else {
-        // Iterate over each message to send and generate a request for each message.
-        for (const processedBlock of processMessageBlocks(payload.blocks)) {
-          payload.blocks = processedBlock;
-          await postJson(webhookUrl, payload, this.timeoutMs);
-        }
-      }
+    const payload: { blocks?: Block[]; text?: string; mrkdwn?: boolean } = { mrkdwn: this.mrkdwn };
+    let bodies: (typeof payload)[] = [];
+    // Only formatting can throw: the formatter (e.g. on a circular log) and the redaction in processMessageBlocks.
+    try {
+      payload.blocks = this.formatter(info).blocks || undefined;
+      // Split a >3000-char payload into several slack messages; otherwise send it as one.
+      bodies =
+        JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT
+          ? [payload]
+          : processMessageBlocks(payload.blocks ?? []).map((blocks) => ({ ...payload, blocks }));
     } catch (error) {
-      return callback(new TransportError("Slack", error, info));
+      // Don't surface errors back through winston — that makes it try to log the failure, which in
+      // serverless mode emits the noisy "Attempt to write logs with no transports" warning we're killing.
+      // eslint-disable-next-line no-console
+      console.warn("[SlackTransport] Failed to format Slack message:", error);
     }
-    callback();
+    bodies.forEach((body) => this.enqueue(webhookUrl, body));
+    callback(); // accepted into the queue; let winston proceed without waiting for delivery
   }
+
+  private enqueue(webhookUrl: string, body: unknown): void {
+    const queue = this.queues.get(webhookUrl) ?? this.queues.set(webhookUrl, []).get(webhookUrl)!;
+    if (queue.length >= MAX_QUEUE_SIZE) queue.shift(); // bound memory: drop oldest under a sustained backlog
+    queue.push({ body, attempts: 0 });
+    void this.drain(webhookUrl);
+  }
+
+  // Getter for checking if the transport is flushed (waitForLogger blocks on this before a bot exits).
+  get isFlushed(): boolean {
+    if (this.draining.size > 0) return false;
+    return Array.from(this.queues.values()).every((queue) => queue.length === 0);
+  }
+
+  // Drains a webhook's queue one message at a time, retrying 429s and 5xx. Sends are not spaced: Slack allows short
+  // bursts above its 1/s webhook limit, so the queue only pauses when Slack answers 429.
+  private async drain(webhookUrl: string): Promise<void> {
+    if (this.draining.has(webhookUrl)) return;
+    this.draining.add(webhookUrl);
+    const queue = this.queues.get(webhookUrl) ?? [];
+    while (queue.length > 0) {
+      const [message] = queue;
+      ++message.attempts;
+      const retryMs = await this.deliver(webhookUrl, message.body, RETRY_BASE_MS * 2 ** (message.attempts - 1));
+      if (retryMs !== null && message.attempts <= MAX_RETRIES) {
+        await sleep(retryMs); // wait Slack's Retry-After (or the backoff), then retry the same message
+      } else if (queue[0] === message) {
+        // Delivered, permanently failed, or out of retries. The identity check matters: under overload,
+        // enqueue's drop-oldest may already have shifted this message out while the POST was in flight,
+        // and blindly shifting here would silently drop a message that was never attempted.
+        queue.shift();
+      }
+    }
+    // No try/finally needed: deliver() catches every send failure and nothing else in the loop throws.
+    this.draining.delete(webhookUrl);
+  }
+
+  // POSTs once. Returns ms to wait before retrying (429/5xx/network): Slack's Retry-After when it sent one, otherwise
+  // backoffMs. Returns null when there's nothing to retry.
+  private async deliver(webhookUrl: string, body: unknown, backoffMs: number): Promise<number | null> {
+    try {
+      await postJson(webhookUrl, body, this.timeoutMs);
+      return null; // delivered
+    } catch (error) {
+      if (!(error instanceof HttpError)) return backoffMs; // network error or timeout — retry
+      if (error.status === 429) return parseRetryAfterMs(error.headers.get("retry-after")) ?? backoffMs;
+      if (error.status >= 500) return backoffMs;
+      return null; // permanent 4xx (bad payload / disabled webhook) — don't retry
+    }
+  }
+}
+
+// Parse a Slack Retry-After header (integer seconds) into milliseconds; null when absent/unparseable.
+export function parseRetryAfterMs(headerValue: string | null | undefined): number | null {
+  if (headerValue == null) return null;
+  const seconds = Number(headerValue);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000) : null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function processMessageBlocks(blocks: Block[]): Block[][] {

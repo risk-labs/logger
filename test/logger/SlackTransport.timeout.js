@@ -1,16 +1,13 @@
 const { assert } = require("chai");
 const http = require("http");
-const sinon = require("sinon");
 const { createSlackTransport } = require("../../dist/logger/SlackTransport");
-const { TransportError } = require("../../dist/logger/TransportError");
-const { createNewLogger } = require("../../dist/logger/Logger");
-const { SpyTransport } = require("../../dist/logger/SpyTransport");
 
 describe("SlackTransport: post timeout", async function () {
-  let server;
+  let server, requests;
   beforeEach(async function () {
     // Accept requests but never respond.
-    server = http.createServer(() => {});
+    requests = 0;
+    server = http.createServer(() => requests++);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   });
   afterEach(async function () {
@@ -19,28 +16,27 @@ describe("SlackTransport: post timeout", async function () {
   });
 
   function createTransport() {
-    return createSlackTransport({ defaultWebHookUrl: `http://127.0.0.1:${server.address().port}`, timeoutMs: 100 });
+    return createSlackTransport({
+      defaultWebHookUrl: `http://127.0.0.1:${server.address().port}`,
+      timeoutMs: 100,
+    });
   }
 
-  it("Fails an unanswered post", async function () {
+  it("Does not hold up the log call behind an unanswered post", async function () {
+    const transport = createTransport();
     const error = await new Promise((resolve) =>
-      createTransport().log({ level: "info", at: "Test", message: "Test message" }, resolve),
+      transport.log({ level: "info", at: "Test", message: "Test message" }, resolve),
     );
-    assert.instanceOf(error, TransportError);
-    assert.include(error.originalError.message, "timed out");
+    assert.isUndefined(error);
+    assert.isFalse(transport.isFlushed);
   });
 
-  it("Reports the timed-out log to the transport-error logger", async function () {
-    const logger = createNewLogger([createTransport()], { createConsoleTransport: false });
-    const spy = sinon.spy();
-    logger.transportErrorLogger.clear().add(new SpyTransport({}, { spy }));
-
-    logger.info({ at: "Test", message: "Test message" });
-    while (!spy.called) await new Promise((resolve) => setTimeout(resolve, 10));
-
-    const { message, originalError, originalInfo } = spy.getCall(0).lastArg;
-    assert.equal(message, "Error occurred while logging to Slack transport");
-    assert.include(originalError.message, "timed out");
-    assert.equal(originalInfo.message, "Test message");
+  it("Abandons an unanswered post after the timeout and retries it", async function () {
+    this.timeout(5000);
+    const transport = createTransport();
+    transport.log({ level: "info", at: "Test", message: "Test message" }, () => {});
+    // First attempt times out after 100ms, then the retry follows the 1s fallback wait.
+    while (requests < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(requests, 2);
   });
 });
