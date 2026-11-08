@@ -50,6 +50,8 @@ interface SlackFormatterResponse {
 }
 
 export const SLACK_MAX_CHAR_LIMIT = 3000;
+// An unanswered post would otherwise stall every transport fed by the same logger.
+const SLACK_POST_TIMEOUT_MS = 10_000;
 
 // Note: info is any because it comes directly from winston.
 function slackFormatter(info: any): SlackFormatterResponse {
@@ -151,6 +153,7 @@ interface Options extends TransportOptions {
   transportConfig: {
     escalationPathWebhookUrls?: { [key: string]: string };
     defaultWebHookUrl: string;
+    timeoutMs?: number;
   };
   formatter: (info: any) => SlackFormatterResponse;
   mrkdwn?: boolean;
@@ -163,6 +166,7 @@ class SlackHook extends Transport {
   private readonly defaultWebHookUrl: string;
   private readonly formatter: (info: any) => SlackFormatterResponse;
   private readonly mrkdwn: boolean;
+  private readonly timeoutMs: number;
   private readonly axiosInstance: AxiosInstance;
 
   constructor(opts: Options) {
@@ -173,6 +177,7 @@ class SlackHook extends Transport {
     this.defaultWebHookUrl = opts.transportConfig.defaultWebHookUrl;
     this.formatter = opts.formatter;
     this.mrkdwn = opts.mrkdwn || false;
+    this.timeoutMs = opts.transportConfig.timeoutMs ?? SLACK_POST_TIMEOUT_MS;
     this.axiosInstance = axios.create({
       proxy: opts.proxy,
       validateStatus: (status) => {
@@ -192,16 +197,18 @@ class SlackHook extends Transport {
       payload.blocks = layout.blocks || undefined;
       // If the overall payload is less than 3000 chars then we can send it all in one go to the slack API.
       if (JSON.stringify(payload).length < SLACK_MAX_CHAR_LIMIT) {
-        await this.axiosInstance.post(webhookUrl, payload);
+        await this.axiosInstance.post(webhookUrl, payload, { signal: AbortSignal.timeout(this.timeoutMs) });
       } else {
         // Iterate over each message to send and generate a axios call for each message.
         for (const processedBlock of processMessageBlocks(payload.blocks)) {
           payload.blocks = processedBlock;
-          await this.axiosInstance.post(webhookUrl, payload);
+          await this.axiosInstance.post(webhookUrl, payload, { signal: AbortSignal.timeout(this.timeoutMs) });
         }
       }
     } catch (error) {
-      return callback(new TransportError("Slack", error, info));
+      // The timeout is the only abort source; axios reports it as a bare "canceled".
+      const reason = axios.isCancel(error) ? new Error(`Post timed out after ${this.timeoutMs}ms`) : error;
+      return callback(new TransportError("Slack", reason, info));
     }
     callback();
   }
