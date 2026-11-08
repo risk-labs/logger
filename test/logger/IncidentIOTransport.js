@@ -84,6 +84,22 @@ describe("IncidentIOTransport", function () {
     assert.isUndefined(await result);
     assert.equal(post.callCount, 2);
   });
+  it("retries a 2xx that does not confirm the event key, and accepts success", async function () {
+    const clock = sinon.useFakeTimers();
+    const post = sinon.stub(globalThis, "fetch");
+    post.onFirstCall().resolves(new Response("not json", { status: 202 }));
+    post
+      .onSecondCall()
+      .resolves(new Response(JSON.stringify({ status: "accepted", deduplication_key: "other" }), { status: 202 }));
+    post.callsFake(async (_url, init) => {
+      const { deduplication_key } = JSON.parse(init.body);
+      return new Response(JSON.stringify({ status: "success", deduplication_key }), { status: 200 });
+    });
+    const result = send(new IncidentIOTransport({}, createConfig({ destination })), info);
+    await clock.tickAsync(750);
+    assert.isUndefined(await result);
+    assert.equal(post.callCount, 3);
+  });
   it("caps Retry-After at 30s and backs off exponentially without it", function () {
     assert.equal(retryDelay("120", 1), 30);
     assert.equal(retryDelay(undefined, 1), 0.25);
