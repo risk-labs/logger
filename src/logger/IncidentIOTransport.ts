@@ -1,5 +1,4 @@
 import Transport from "winston-transport";
-import axios from "axios";
 import { createHash, randomUUID } from "crypto";
 import * as ss from "superstruct";
 import { TransportError } from "./TransportError";
@@ -101,15 +100,21 @@ export class IncidentIOTransport extends Transport {
 
   private async deliver(destination: Config["destination"], payload: { deduplication_key: string }): Promise<void> {
     for (let attempt = 1; ; attempt++) {
-      // Every HTTP status resolves, so only network errors and timeouts reject. Axios errors contain credentials
-      // and payloads, so drop them unread rather than expose them to the logger's error handlers.
-      const response = await axios
-        .post(destination.url, payload, {
-          headers: { Authorization: `Bearer ${destination.token}` },
-          timeout: 5000,
-          maxRedirects: 0,
-          validateStatus: () => true,
-        })
+      // Every HTTP status resolves, so only network errors and timeouts reject. Those errors can carry the URL, which
+      // holds credentials, so drop them unread rather than expose them to the logger's error handlers.
+      const response = await fetch(destination.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${destination.token}` },
+        body: JSON.stringify(payload),
+        redirect: "manual",
+        signal: AbortSignal.timeout(5000),
+      })
+        .then(async (res) => ({
+          status: res.status,
+          headers: res.headers,
+          // Untyped, as axios's response data was: the checks below treat any unexpected shape as unconfirmed.
+          data: (await res.json().catch(() => undefined)) as any,
+        }))
         .catch(() => undefined);
       const status = response?.status;
       const ok = status !== undefined && status >= 200 && status < 300;
@@ -126,7 +131,7 @@ export class IncidentIOTransport extends Transport {
         const reason = ok ? "event key not confirmed" : status ? `HTTP ${status}` : "no response";
         throw new Error(`incident.io delivery failed (${reason})`);
       }
-      await delay(retryDelay(response?.headers?.["retry-after"], attempt));
+      await delay(retryDelay(response?.headers.get("retry-after") ?? undefined, attempt));
     }
   }
 }

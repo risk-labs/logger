@@ -1,6 +1,5 @@
 const { assert } = require("chai");
 const sinon = require("sinon");
-const axios = require("axios");
 const {
   IncidentIOTransport,
   createConfig,
@@ -12,10 +11,11 @@ const { PagerDutyV2Transport } = require("../../dist/logger/PagerDutyV2Transport
 const destination = { url: "https://api.incident.io/v2/alert_events/http/fixture", token: "fixture", urgency: "high" };
 const info = { level: "error", at: "Bot", message: "failed", "bot-identifier": "prod-relayer" };
 const send = (transport, event) => new Promise((resolve) => transport.log(event, resolve));
-const accept = async (_url, body) => ({
-  status: 202,
-  data: { status: "accepted", deduplication_key: body.deduplication_key },
-});
+const sent = (call) => JSON.parse(call.args[1].body);
+const accept = async (_url, init) =>
+  new Response(JSON.stringify({ status: "accepted", deduplication_key: JSON.parse(init.body).deduplication_key }), {
+    status: 202,
+  });
 
 describe("IncidentIOTransport", function () {
   afterEach(() => sinon.restore());
@@ -31,19 +31,21 @@ describe("IncidentIOTransport", function () {
     assert.equal(transports.filter((x) => x instanceof IncidentIOTransport).length, 1);
   });
   it("keeps one key across retries and does not mutate the log event", async function () {
-    const post = sinon.stub(axios, "post");
+    const post = sinon.stub(globalThis, "fetch");
     post.onFirstCall().rejects(new Error("network failure"));
     post.callsFake(accept);
     const transport = new IncidentIOTransport({}, createConfig({ destination }));
     assert.isUndefined(await send(transport, info));
     assert.equal(post.callCount, 2);
-    assert.equal(post.firstCall.args[1].deduplication_key, post.secondCall.args[1].deduplication_key);
+    assert.equal(sent(post.firstCall).deduplication_key, sent(post.secondCall).deduplication_key);
     assert.deepEqual(info, { level: "error", at: "Bot", message: "failed", "bot-identifier": "prod-relayer" });
-    assert.equal(post.secondCall.args[1].metadata.paging_urgency, "high");
+    assert.equal(sent(post.secondCall).metadata.paging_urgency, "high");
+    assert.equal(post.secondCall.args[1].headers.Authorization, "Bearer fixture");
+    assert.equal(post.secondCall.args[1].redirect, "manual");
     assert.isTrue(transport.isFlushed);
   });
   it("keeps unrelated occurrences separate, and honors scoped producer keys", async function () {
-    const post = sinon.stub(axios, "post").callsFake(accept);
+    const post = sinon.stub(globalThis, "fetch").callsFake(accept);
     const transport = new IncidentIOTransport({}, createConfig({ destination }));
     for (const event of [
       info,
@@ -53,12 +55,14 @@ describe("IncidentIOTransport", function () {
       { ...info, "bot-identifier": "another", incidentDeduplicationKey: "same" },
     ])
       await send(transport, event);
-    assert.notEqual(post.getCall(0).args[1].deduplication_key, post.getCall(1).args[1].deduplication_key);
-    assert.equal(post.getCall(2).args[1].deduplication_key, post.getCall(3).args[1].deduplication_key);
-    assert.notEqual(post.getCall(3).args[1].deduplication_key, post.getCall(4).args[1].deduplication_key);
+    assert.notEqual(sent(post.getCall(0)).deduplication_key, sent(post.getCall(1)).deduplication_key);
+    assert.equal(sent(post.getCall(2)).deduplication_key, sent(post.getCall(3)).deduplication_key);
+    assert.notEqual(sent(post.getCall(3)).deduplication_key, sent(post.getCall(4)).deduplication_key);
   });
   it("routes notification paths and redacts delivery failures", async function () {
-    const post = sinon.stub(axios, "post").resolves({ status: 401, data: { message: "secret URL and token" } });
+    const post = sinon
+      .stub(globalThis, "fetch")
+      .resolves(new Response(JSON.stringify({ message: "secret URL and token" }), { status: 401 }));
     const other = { ...destination, url: "https://api.incident.io/v2/alert_events/http/other" };
     const transport = new IncidentIOTransport({}, createConfig({ destination, customServices: { custom: other } }));
     const error = await send(transport, { ...info, notificationPath: "custom" });
@@ -70,8 +74,8 @@ describe("IncidentIOTransport", function () {
   });
   it("waits for Retry-After before retrying a 429", async function () {
     const clock = sinon.useFakeTimers();
-    const post = sinon.stub(axios, "post");
-    post.onFirstCall().resolves({ status: 429, headers: { "retry-after": "7" } });
+    const post = sinon.stub(globalThis, "fetch");
+    post.onFirstCall().resolves(new Response(null, { status: 429, headers: { "retry-after": "7" } }));
     post.callsFake(accept);
     const result = send(new IncidentIOTransport({}, createConfig({ destination })), info);
     await clock.tickAsync(6999);
